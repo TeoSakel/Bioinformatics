@@ -1,0 +1,366 @@
+---
+title: "Introduction"
+subtitle: "To the Introduction"
+author: "To Bioinformatics"
+format:
+  revealjs:
+    logo: ../NYU_Short_RGB_Color.png
+editor: source
+---
+
+## Today's Lecture
+
+- About the Course
+    + What is bioinformatics?
+    + What is this course about and what not
+    + What do you think?
+    + Logistics
+- Sequencing technologies (if time allows)
+    + Main data type
+    + Standard bioinformatic abstractions
+
+# About The Course
+
+## What is Bioinformatics?
+
+. . .
+
+![Mandatory Venn Diagram: ✓](figures/bioinformatics.png){height="550"}
+
+## Not an introduction to
+
+-   Biology
+-   Programming/CS
+-   Statistics
+
+::: {.notes}
+you need background in all 3 and we need to cut corners in all 3.
+:::
+
+## Required background {.smaller}
+
+1.  **Programming**
+    - Requested: Python/R & terminal basics (keyboard, variables, functions, *plotting*)
+    - Offered: good practices & bioinformatic tools (A lot of code is provided and requested)
+2.  **Statistics**
+    - Requested: 
+      basic algebra (what is a matrix), 
+      calculus (what is a derivative) & 
+      probability (what is variance)
+    - Offered: techniques and intuitions from a programming perspective
+3.  **Biology**
+    - Requested: basic molecular biology (eg central dogma)
+    - Offered: dry lab techniques and tools
+    
+::: {.notes}
+The order matters...
+We will do an intro to programming/statistic to access the situation.
+You probably know more biology than me 😅
+:::
+
+## What the course is not
+
+- **Workshop/Boot-camp**: 👩‍🔬 ➡️ 👩‍💻
+- **"Practical"**: environments, packages, pipelines
+- **Resource**: vignettes for every data modality/experiment
+
+There are *plenty* of online resources (eg
+[here](https://training.galaxyproject.org/training-material/),
+[here](https://github.com/danielecook/Awesome-Bioinformatics), and
+[here](https://bioconductor.org/help/course-materials/) )
+and an NYU course (**Applied Sequencing Informatics**). I do not have the hubris to 
+believe I can do better.
+
+::: aside
+**Before you leave**: In the same way a course about *cooking* is not about *food*
+:::
+
+## What the course is (or at least aspires to be) about
+
+- **Understanding**: *what* is under the hood & *why*
+- **Empowering**: techniques/ideas that are widely applicable
+- [Hedgehogs (not foxes)](https://en.wikipedia.org/wiki/The_Hedgehog_and_the_Fox): 
+  Focus in genomics^[at the risk of equipping you with only a "hammer"]
+
+::: aside
+Somebody spoke about "hubris"?
+:::
+
+## Potential/Hopeful take aways {.incremental}
+
+- **Literate Programming**: know how to write self-contained reports
+- **Bioinformatic Ecology**: know to read the basic formats and what tool to reach for
+- **Meta-learning**: know where to look for help/resources (besides your 
+  bioinformatician colleague/friend)
+- **Statistical Literacy**: know which ~~test~~ model you need, what *"control for"* means
+- (some) **Tribal Knowledge**: write code/do analysis and get feedback
+
+## Lectures
+
+- **Theoretical**: introduce the question and the ideas involved from a 
+  "hacker" perspective (code no proofs)
+- **Applications**: run some pipeline or reproduce a study to see theory in practice, 
+  exploring the 
+  [garden of forking paths](https://en.wikipedia.org/wiki/The_Garden_of_Forking_Paths)^[
+  usually to dead-ends, also for a less light-read
+  [here](http://www.stat.columbia.edu/~gelman/research/unpublished/p_hacking.pdf)]
+- **All**: hands on application following the code that we will share
+
+## Syllabus {.scrollable}
+
+0. Introduction:
+    + Probability Basics
+    + Bioinformatic Ecosystem
+1. Alignment
+    + Dynamic Programming
+    + Indexing
+2. Differential Analysis
+    + Overlap Count
+    + Regression Models
+    + Enrichment
+3. Proteomics
+    + Guest Lecture
+4. Epigenetics
+    + Peak Calling
+    + Motif Discovery 
+    + 3D Chromatin
+5. Single-Cell 
+    + Manifold Learning
+
+## What we expect from you
+
+- Read the material (~1h/week), be prepared
+- Participation during class 
+- Participation in group projects
+- Feedback about course speed/direction
+
+## Homework & Grading
+
+- **TBD**: replicate analysis or guided exercises (modify code we wrote in class)
+- Grade based on presentation of homework
+
+## For next time {.scrollable}
+
+Make sure you:
+
+- Join the [BrightSpace](https://nyusom.brightspace.com/d2l/home/18771) of the course.
+- Join the [Slack channel](https://join.slack.com/t/bioinformatic-aoz3981/shared_invite/zt-1fbyzsb4j-ndhWdc3JLLpA5DBEYQKjrg)
+  of the course.
+- Setup your programming environment:
+    + If you do not have a preference:  
+      Install [R](https://cran.r-project.org/) and 
+      [RStudio](https://www.rstudio.com/products/rstudio/download/) and familiarize
+      yourselves with [Rmarkdown](https://rmarkdown.rstudio.com/lesson-1.html)^[
+      or [Quatro](https://quarto.org/docs/get-started/) which is the new iteration]
+    + If you prefer Python then make sure you have [version 3](https://www.python.org/downloads/) 
+      and familiarize with [Jupyter](https://jupyterlab.readthedocs.io/en/stable/user/interface.html) 
+      and [notebooks](https://jupyter.org/try-jupyter/lab/).^[ 
+      If you are just getting started with Python it is probably easier to install  
+      [Anaconda](https://www.anaconda.com/products/distribution)]
+      
+# Multi-generational Sequencing
+
+## Primary Material 🧬
+
+:::: {.columns}
+::: {.column width="50%"}
+![Chromatin Architecture](figures/Chromosome_en.svg)
+<!-- ![](https://upload.wikimedia.org/wikipedia/commons/3/37/Difference_DNA_RNA-EN.svg) -->
+:::
+
+::: {.column width="50%"}
+![Strand orientation](figures/0322_DNA_Nucleotides.jpg)
+:::
+::::
+
+## Main Technologies
+
+![Adapted from doi: 10.1038/nrg2626 and 10.1038/nrg.2016.49](figures/sequencing_tech.png)
+
+::: {.notes}
+- Many ways to categorize technologies:
+    + synthesis (CRT or SNA) vs single-molecule-real-time vs ligation
+    + **short vs long** 
+    + base-calling technology:
+        - color-coding (illumina)
+        - illumination (bases add in turn - Helicos)
+        - pH (Ion Torrent)
+        - charge (Nanopore)
+- Technology [Review 2009](www.doi.org/10.1038/nrg2626) 
+  [Review 2016](www.doi.org/10.1038/nrg.2016.49)
+- [long-reads](https://doi.org/10.1038/s41576-020-0236-x)
+:::
+
+## Short (~150-300bp) vs Long (~10kbp) 
+
+**Trade-off**: base-calling vs alignment
+
+- Base Calling = technological constraint 
+    + sources: phasing + signal decay
+    + short: ~ 0.1% substitutions
+    + long (single pass): ~ 10% indels
+- Alignment = logical constraint
+    + shorter reads = less information
+    + $L_{\text{read}} \lt L_{\text{feature}}$ ⇒ more reads required
+
+. . .
+
+-  💵/Gb: Short << Long
+
+::: {.notes}
+Other technological limitations of short reads: most require PCR amplification 
+introducing bias like artificial duplication and GC-enrichment
+:::
+
+## Coverage vs Length
+
+![[Sequencing depth and coverage: key considerations in genomic analyses](https://doi.org/10.1038/nrg3642)](figures/coverage_vs_length.png){height="550"}
+
+::: {.notes}
+- Publication from 2014
+- Depth is required to correct sequencing errors (consensus calling)
+- Depth is not always uniform, distribution depends on technology (eg PCR leads to GC bias)
+:::
+
+## Paired-end Reads
+
+<!-- TODO: replace -->
+![](https://www.illumina.com/content/dam/illumina-marketing/images/science/v2/web-graphic/paired-end-vs-single-read-seq-web-graphic.jpg)
+
+::: {.notes}
+Combine benefits of short and long reads. 
+See Box1 [here](https://doi.org/10.1101/gr.074906.107)
+:::
+
+## Illumina technology
+
+<!-- ![Library Prep](figures/library_prep.png) -->
+
+[https://youtu.be/fCd6B5HRaZ8](https://youtu.be/fCd6B5HRaZ8)
+
+
+## Big Picture
+
+<!-- Annotate "library", "sequence", -->
+![](figures/10k_feet_genomic.png)
+
+::: {.notes}
+Reads are essentially the physics equivalent of "particles", they carry/quantize
+the signal they are meant to encode. Once they have been positioned in a reference 
+frame, they can be aggregated and characterize the space (genome) we are interested in.
+As "particles", reads are also independent of reference frame! If a new genome is
+released they can be re-aligned.
+
+- Encode: design the experiment so that the signal of interest *reduces* to sequencing
+- Alignment: endows reads with coordinates
+- Inference: get from counts back to the signal of inference
+- The diagram doesn't show how the question is conceived and the signal analyzed
+:::
+
+## Genomic Space
+
+<!-- Split into 2 and manually plot points & intervals -->
+
+![Cartesian vs Genomic Coordinates](figures/genomic_coordinates.png)
+
+::: {.notes}
+As a *space* the genome is not like the spaces most of us are familiar with (Euclidean).
+
+- it is not *infinite*
+- it is not *continuous* (base-pairs are discrete)
+- it is not *connected* (unless there is only 1 chromosome)
+- it is not *homogeneous* ("mappability" is affected by sequence content)
+:::
+
+
+## Alignment
+
+![https://doi.org/10.1007/s12575-009-9004-1](figures/alignment_cartoon.png)
+
+
+## How Alignment looks
+
+![https://doi.org/10.1038/nbt.1754](figures/igv_paper.webp)
+
+## Cornucopia of Applications {.smaller}
+
+See [High-Throughput Sequencing Technologies](http://dx.doi.org/10.1016/j.molcel.2015.05.004),
+[Protocols](https://www.illumina.com/content/dam/illumina-marketing/documents/applications/ngs-library-prep/ForAllYouSeqMethods.pdf) & 
+[explorer](https://www.illumina.com/science/sequencing-method-explorer.html)
+
+![](figures/seq_method_papers.png)
+
+::: {.notes}
+Some signals encoded in reads are:
+
+ - For variant calling: nucleotide frequency
+ - RNAseq: transcription rate
+ - Bisulphite seq: methylation rate
+ - ChIPseq: protein binding
+ - ATACseq: chromatin accessibility
+ - HiC: chromatin connectivity
+:::
+
+## Transcription
+
+![https://doi.org/10.1038/nrg2484](figures/typical_rnaseq_experiment.webp)
+
+::: {.notes}
+Key point: we still reverse transcribe to DNA (everything has to be DNA)
+:::
+
+## Complex Genomic Features
+
+[What is a gene?](https://plato.stanford.edu/entries/gene/)
+
+. . .
+
+![GFF3 Canonical Gene](https://raw.githubusercontent.com/The-Sequence-Ontology/Specifications/master/img/figure1.png)
+
+
+> The gene is a union of genomic sequences encoding a coherent set of potentially overlapping functional products. (Gerstein et al. 2007: 677)
+
+::: {.notes}
+The "gene" is a theoretical construct (it only exists within the theory of genetics)
+
+1. Early Mendelians: unit of hereditary material responsible for character differences (1-to-1 with hereditary phenotypic traits)
+2. Morgan et al: genes are linear spread along the chromosomes
+3. Biochemistry: DNA structure and genes encoding proteins (but then RNA is spliced, variants change function)
+4. Epi-genetics: where other parts of the genome control protein-coding genes
+
+What matters is what ENCODE (or other big DB) say. The same answer applies to any
+other question of "what genomic feature X is?", namely it is defined by the
+relevant DB usually as a collection of annotated genomic intervals.
+:::
+
+## Data Bases
+
+The [2021 NAR DB issue](https://academic.oup.com/nar/article/49/D1/D1/6059975)
+catalogs [1,641 databases](https://www.oxfordjournals.org/nar/database/c/). 
+Some big ones :
+
+- Genome Annotations: 
+    [Ensembl](https://www.ensembl.org/index.html) &
+    [UCSC](https://genome.ucsc.edu/cgi-bin/hgGateway)
+- Experiments: 
+    [SRA](https://www.ncbi.nlm.nih.gov/sra), 
+    [GEO](https://www.ncbi.nlm.nih.gov/geo/), and
+    [ENCODE](https://www.encodeproject.org/)
+- Proteins: 
+    [UniProt](https://www.uniprot.org/) & 
+    [Pfam](http://pfam.xfam.org/)
+
+(
+see also 
+[here](https://www.ebi.ac.uk/services/data-resources-and-tools) &
+[here](https://www.ncbi.nlm.nih.gov/search/)
+)
+
+## Epigenetics
+
+![https://doi.org/10.1038/nrg3798](figures/epigenetic_apps.png)
+
+## De-novo Assembly ❌
+
+![https://doi.org/10.1007/978-3-030-80049-9_11](figures/de_Bruijn_graph.webp)
+
