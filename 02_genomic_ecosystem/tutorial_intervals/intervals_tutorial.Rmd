@@ -3,6 +3,8 @@ title: "Working with Intervals"
 output: html_notebook
 ---
 
+## Libraries
+
 To install the necessary packages run:
 
 ```{r install_libs, eval=FALSE}
@@ -21,16 +23,36 @@ BPPARAM <- MulticoreParam(workers = 4L)
 chromosomes <- paste0("chr", c(1:19, "X", "Y"))  # mouse chromosomes
 ```
 
-Data from [GSE38046](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE38046).
-Can be downloaded from https://genome.med.nyu.edu/public/tsirigoslab/teaching/bioinformatics/GSE38046
-(you can skip the "full" directory to save space)
+## Data
+
+Primary data source; [GSE38046](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE38046)
+
+For this tutorial we are going to use the pre-processed data from https://genome.med.nyu.edu/public/tsirigoslab/teaching/bioinformatics/GSE38046 .
+You can download them with the following command^[
+[credit](https://bmwieczorek.wordpress.com/2008/10/01/wget-recursively-download-all-files-from-certain-directory-listed-by-apache/)
+]:
+
+```{bash download_data, eval=FALSE}
+wget --no-check-certificate -r -np -nH --cut-dirs=5 -R index.html \
+    https://genome.med.nyu.edu/public/tsirigoslab/teaching/bioinformatics/GSE38046/
+```
+
+Explanation:
+
+- `r`: recursively (ie download everything)
+- `np`: no-parents = do not go up towards "bioinformatics"
+- `nH`: no host = do not save the "genome.med.nyu.edu"
+- `--cut-dirs=5`: ignore the first 5 directories (up to GSE38046)
+- `-R index.html`: ignore the "index.html" files
+
+### File metadata
 
 ```{r}
 bam_files <- list.files("bam", pattern = "bam$")
 file_meta <- bam_files |> 
-    sub(".bam$", "", x = _) |> 
-    strsplit(split = "-") |> 
-    sapply("[[", 3)
+    sub(".bam$", "", x = _) |> # remove suffix
+    strsplit(split = "-") |>   # split at "-"
+    sapply("[[", 3)            # get 3rd element (sample_id)
 file_meta <- data.frame(sample_id = file_meta, 
                         path = file.path("bam", bam_files))
 meta <- read.csv("sample_meta.csv", colClasses = "character")
@@ -45,6 +67,10 @@ Histone modifications:
 - [H3K27me3](https://en.wikipedia.org/wiki/H3K27me3)
 - [H3K4me3](https://en.wikipedia.org/wiki/H3K4me3)
 
+
+### BAM diagnostics
+
+BAM Flag Explanation: https://broadinstitute.github.io/picard/explain-flags.html
 
 ```{r}
 # Filter based on flag: 
@@ -72,24 +98,28 @@ diag.stats
 ## Example
 
 ```{r}
-bam <- BamFile(meta[ "8070", "path"])
-chrom_len <- scanBamHeader(bam)$targets
+bam <- BamFile(meta[ "8070", "path"])  # read the file of sample "8070"
+chrom_len <- scanBamHeader(bam)$targets  # chromosome lengths
 chrom_len
 ```
 
 ```{r}
-chr10 <- GRanges("chr10", IRanges(1, chrom_len["chr10"]))
+chr10 <- GRanges("chr10", IRanges(1, chrom_len["chr10"]))  # coordinates of chr10
 # chr10 <- Seqinfo(genome = "mm10")["chr10"]  # alternative
 chr10
 ```
+
+### Parse BAM
 
 ```{r}
 param <- ScanBamParam(flag = scanBamFlag(isUnmappedQuery = FALSE, isDuplicate = FALSE), 
                       mapqFilter = 20, 
                       which = chr10)
-reads10 <- readGAlignments(bam, param = param)
+reads10 <- readGAlignments(bam, param = param)  # read only specified alignments
 reads10
 ```
+
+### RLE
 
 ```{r}
 bw10 <- coverage(reads10)$chr10
@@ -106,14 +136,18 @@ print(object.size(bw10), units = "auto")
 print(object.size(as.vector(bw10)), units = "auto")
 ```
 
+## GRanges
+
 ```{r}
-reads10 <- GRanges(reads10) # ignores gaps GRangeList to account for them
+reads10 <- GRanges(reads10) # ignores gaps. GRangeList to account for them
 reads10
 ```
 
 ```{r}
 width(reads10) |> table() 
 ```
+
+### Overlaps
 
 ENCODE blacklist regions [here](https://www.encodeproject.org/annotations/ENCSR636HFF/)
 
@@ -139,6 +173,8 @@ reads10 <- subsetByOverlaps(reads10, blacklist, invert = TRUE)
 reads10
 ```
 
+### Resize
+
 ```{r}
 reads10 <- resize(reads10, 150, fix = "start")
 bw10 <- coverage(reads10)
@@ -158,7 +194,11 @@ bamCoverage \
     --outFileName h3k4me3-matureB-8070_chr10.bw
 ```
 
-Look at IGV
+In deeptools/python: https://deeptools.readthedocs.io/en/develop/content/tools/bamCoverage.html
+
+## Peaks
+
+Regions of high count
 
 ```{r}
 hist(runValue(bw10)[["chr10"]], breaks = 100)
@@ -185,6 +225,8 @@ peaks <- reduce(peaks + 50)
 hist(width(peaks), breaks = "fd")
 ```
 
+## Tiles
+
 ```{r}
 gtiles <- tileGenome(chrom_len["chr10"], tilewidth = 5000, cut.last.tile.in.chrom = TRUE)
 gtiles
@@ -204,6 +246,8 @@ plot(start(gtiles) * 1e-6, gtiles$count, type = "l", frame.plot = FALSE,
 hist(gtiles$count, breaks = 100)
 plot(ecdf(log10(1 + gtiles$count)))
 ```
+
+## Fingerprint
 
 [Fingerprint plot](https://deeptools.readthedocs.io/en/develop/content/tools/plotFingerprint.html)
 
@@ -246,6 +290,7 @@ plotFingerprint --bamfiles bam/h3k4me3-matureB-8070.bam bam/input-matureB-8090.b
     [REPEAT FILTER PARAMS]
 ```
 
+## Summarized Experiment
 
 ```{r}
 bam_files <- BamFileList(meta$path)
@@ -268,6 +313,8 @@ corrplot::corrplot(cor(assay(se)), method = "square", order = 'hclust',
 
 deeptools equivalent to `summarizeOverlaps` is
 [multiBamSummary](https://deeptools.readthedocs.io/en/develop/content/tools/multiBamSummary.html)
+
+## Genomic Features
 
 ```{r}
 library(TxDb.Mmusculus.UCSC.mm10.knownGene)
