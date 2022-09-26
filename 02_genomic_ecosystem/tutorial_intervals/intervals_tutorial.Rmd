@@ -1,0 +1,299 @@
+---
+title: "Working with Intervals"
+output: html_notebook
+---
+
+To install the necessary packages run:
+
+```{r install_libs, eval=FALSE}
+BiocManager::install(c("GenomicRanges", "rtracklayer", "Rsamtools", 
+                       "GenomicAlignments", "BiocParallel", "corrplot", "pals"))
+```
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(GenomicRanges)      # main interval data-structure
+library(rtracklayer)        # import/export intervals
+library(Rsamtools)          # wrap/emulate samtools
+library(GenomicAlignments)  # import/export BAM
+library(BiocParallel)       # for parallel processing
+
+BPPARAM <- MulticoreParam(workers = 4L)
+chromosomes <- paste0("chr", c(1:19, "X", "Y"))  # mouse chromosomes
+```
+
+Data from [GSE38046](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE38046).
+Can be downloaded from https://genome.med.nyu.edu/public/tsirigoslab/teaching/bioinformatics/GSE38046
+(you can skip the "full" directory to save space)
+
+```{r}
+bam_files <- list.files("bam", pattern = "bam$")
+file_meta <- bam_files |> 
+    sub(".bam$", "", x = _) |> 
+    strsplit(split = "-") |> 
+    sapply("[[", 3)
+file_meta <- data.frame(sample_id = file_meta, 
+                        path = file.path("bam", bam_files))
+meta <- read.csv("sample_meta.csv", colClasses = "character")
+meta <- merge(meta, file_meta, by = "sample_id")
+rownames(meta) <- meta$sample_id
+rm(file_meta)
+meta
+```
+
+Histone modifications:
+
+- [H3K27me3](https://en.wikipedia.org/wiki/H3K27me3)
+- [H3K4me3](https://en.wikipedia.org/wiki/H3K4me3)
+
+
+```{r}
+# Filter based on flag: 
+duplicated_flag <- ScanBamParam(flag=scanBamFlag(isUnmapped=FALSE, isDuplicate=TRUE))
+
+diag.stats <- bplapply(meta$path, function(path) {
+    bam <- BamFile(path)
+    mapped <- idxstatsBam(bam)  # samtools idxstat <bam>
+    mapped <- colSums(mapped[, c("mapped", "unmapped")])
+    marked <- countBam(bam, param=duplicated_flag)$records
+    total <- sum(mapped)
+    c(total = total,  
+      mapped, 
+      marked = marked,  
+      pct_mapped = mapped["mapped"]/total,
+      pct_marked = marked/total)
+}, BPPARAM = BPPARAM) |> 
+    simplify2array() |> 
+    t() |> 
+    as.data.frame()
+rownames(diag.stats) <- basename(meta$path)
+diag.stats
+```
+
+## Example
+
+```{r}
+bam <- BamFile(meta[ "8070", "path"])
+chrom_len <- scanBamHeader(bam)$targets
+chrom_len
+```
+
+```{r}
+chr10 <- GRanges("chr10", IRanges(1, chrom_len["chr10"]))
+# chr10 <- Seqinfo(genome = "mm10")["chr10"]  # alternative
+chr10
+```
+
+```{r}
+param <- ScanBamParam(flag = scanBamFlag(isUnmappedQuery = FALSE, isDuplicate = FALSE), 
+                      mapqFilter = 20, 
+                      which = chr10)
+reads10 <- readGAlignments(bam, param = param)
+reads10
+```
+
+```{r}
+bw10 <- coverage(reads10)$chr10
+bw10
+```
+
+```{r}
+bw10[1:10]
+bw10[3102332 + 1:2000]
+```
+
+```{r}
+print(object.size(bw10), units = "auto")
+print(object.size(as.vector(bw10)), units = "auto")
+```
+
+```{r}
+reads10 <- GRanges(reads10) # ignores gaps GRangeList to account for them
+reads10
+```
+
+```{r}
+width(reads10) |> table() 
+```
+
+ENCODE blacklist regions [here](https://www.encodeproject.org/annotations/ENCSR636HFF/)
+
+```{r}
+blacklist_path <- "mm10_blacklist.bed"
+if (!file.exists(blacklist_path)) {
+    blacklist_url <- "https://www.encodeproject.org/files/ENCFF547MET/@@download/ENCFF547MET.bed.gz"
+    download.file(blacklist_url, paste0(blacklist_path, ".gz"))
+    R.utils::gunzip(paste0(blacklist_path, ".gz"))
+}
+
+blacklist <- import(blacklist_path)
+blacklist
+```
+
+```{r}
+findOverlaps(reads10, blacklist)
+```
+
+
+```{r}
+reads10 <- subsetByOverlaps(reads10, blacklist, invert = TRUE)
+reads10
+```
+
+```{r}
+reads10 <- resize(reads10, 150, fix = "start")
+bw10 <- coverage(reads10)
+export(bw10, sprintf("%s_chr10.bw", file_meta$sample_id[1]), "BigWig")
+```
+
+so far what we have done is equivalent to:
+
+```{sh, eval=FALSE}
+bamCoverage \
+    --minMappingQuality 20 \
+    --ignoreDuplicates \
+    --blackListFileName <blacklist_path> \
+    --extendReads 150 \
+    --region chr10 \
+    --bam bam/h3k4me3-matureB-8070.bam \
+    --outFileName h3k4me3-matureB-8070_chr10.bw
+```
+
+Look at IGV
+
+```{r}
+hist(runValue(bw10)[["chr10"]], breaks = 100)
+which(bw10 >= 10)
+```
+
+```{r}
+slice(bw10, lower = 10)$chr10
+```
+
+```{r}
+peaks <- slice(bw10, lower = 10, rangesOnly = TRUE)
+peaks <- GRanges(peaks)
+peaks
+```
+
+```{r}
+hist(width(peaks), breaks = "fd")
+```
+
+```{r}
+peaks <- resize(peaks, 50, fix = "center")
+peaks <- reduce(peaks + 50)
+hist(width(peaks), breaks = "fd")
+```
+
+```{r}
+gtiles <- tileGenome(chrom_len["chr10"], tilewidth = 5000, cut.last.tile.in.chrom = TRUE)
+gtiles
+```
+
+```{r}
+gtiles$count <- countOverlaps(gtiles, reads10, type = "any")
+subset(gtiles, count > 0)
+```
+
+```{r}
+plot(start(gtiles) * 1e-6, gtiles$count, type = "l", frame.plot = FALSE, 
+     xlab = "Chr10 Position (Mbp)", ylab = "Overlap Count", main = "H3K4me3")
+```
+
+```{r}
+hist(gtiles$count, breaks = 100)
+plot(ecdf(log10(1 + gtiles$count)))
+```
+
+[Fingerprint plot](https://deeptools.readthedocs.io/en/develop/content/tools/plotFingerprint.html)
+
+```{r}
+fingerprint <- gtiles$count |> sort() |> cumsum()
+fingerprint <- fingerprint / sum(gtiles$count)
+hist(fingerprint, breaks = "fd")
+```
+
+```{r}
+# plot(fingerprint, type = 'l')
+fingerprint <- ecdf(fingerprint)
+plot(fingerprint)
+```
+
+```{r}
+fingerprint(.5)
+```
+
+```{r}
+scale_last <- function(x) x / x[length(x)]
+
+neg_control <- readGAlignments(meta["8090", "path"], param = param) |> 
+    GRanges() |> 
+    resize(width = 150, fix = "start") |> 
+    subsetByOverlaps(blacklist, invert = TRUE) |> 
+    countOverlaps(query = gtiles, subject = _) |> 
+    sort() |> 
+    cumsum() |> 
+    scale_last() |> 
+    ecdf()
+
+plot(fingerprint)
+lines(neg_control, col = 2)
+```
+
+```{sh, eval=FALSE}
+plotFingerprint --bamfiles bam/h3k4me3-matureB-8070.bam bam/input-matureB-8090.bam \
+    --plotFile h3k4me3-matureB-8070_fingerprint.png \
+    [REPEAT FILTER PARAMS]
+```
+
+
+```{r}
+bam_files <- BamFileList(meta$path)
+se <- summarizeOverlaps(gtiles, bam_files, param = param, BPPARAM = BPPARAM)
+colData(se) <- DataFrame(meta)
+colnames(se) <- basename(meta$path) |> sub(".bam$", "", x = _)
+se
+```
+
+```{r}
+rowRanges(se)
+```
+
+```{r}
+w5k_mean <- colMeans2(assay(se))
+se <- se[rowSums(assay(se)) > 0, ]
+corrplot::corrplot(cor(assay(se)), method = "square", order = 'hclust', 
+                   col.lim = c(0, 1), is.corr = FALSE, col = rev(pals::viridis(25)))
+```
+
+deeptools equivalent to `summarizeOverlaps` is
+[multiBamSummary](https://deeptools.readthedocs.io/en/develop/content/tools/multiBamSummary.html)
+
+```{r}
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+txdb <- TxDb.Mmusculus.UCSC.mm10.knownGene
+```
+
+```{r}
+gprom <- genes(txdb) |> promoters() |> subsetByOverlaps(chr10)
+gprom
+```
+
+```{r}
+colMeans(assay(se))
+```
+
+```{r}
+gcounts <- summarizeOverlaps(gprom, bam_files, param = param, BPPARAM = BPPARAM)
+gprom_mean <- colMeans(assay(gcounts))
+```
+
+```{r}
+antibody <- ifelse(grepl("^H3K", meta$antibody), meta$antibody, "input")
+lib_size <- countBam(bam_files, param = param)
+rpkm_5k <- 1e9 * w5k_mean / lib_size$records / 5000
+rpkm_prom <- 1e9 * gprom_mean / lib_size$records / 2200
+plot(rpkm_5k, rpkm_prom, type = "n", frame.plot = FALSE)
+text(rpkm_5k, rpkm_prom, labels = antibody)
+abline(0, 1, lty = 2, col = 2)
+```

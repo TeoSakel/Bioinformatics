@@ -1,0 +1,1177 @@
+---
+title: "Genomic Bioinformatics Environment"
+execute: 
+  eval: true
+  echo: false
+format: 
+  html:
+    toc: true
+    warning: false
+---
+
+```{r}
+#| label: libraries
+
+suppressPackageStartupMessages({
+    library(Biostrings)
+    library(GenomicAlignments)
+    library(ggplot2)
+})
+```
+
+## Introduction
+
+The branch of bioinformatics we are going to focus in this course is genomics and
+in particular the analysis of sequencing experiments (\*-seq technologies). In this
+session, we are going to introduce the *programming environment* that has been
+developed to facilitate genomic analysis.
+
+The term *programming environment* refers to a set of concepts, conventions, 
+data structure and programs that work together and form a foundation upon which
+more complex programs and pipelines are developed. In a sense, the programming
+environment defines a language which members of the community can use to implement
+their ideas. 
+
+The most famous programming environment is the [Unix](https://en.wikipedia.org/wiki/The_Unix_Programming_Environment)
+one which defines the corresponding [philosophy](https://en.wikipedia.org/wiki/Unix_philosophy).
+The Unix environment, is built upon simple text files as its primary object and
+provides a set of tools ("verbs" in our language analogy) to manipulate those files.
+The defining characteristic of these programs is that they are compose-able via 
+the Unix pipe (`|`).
+
+[It is interesting that what allows a programming environment to form are the
+"constraints" that it is built upon, like the primary data type. It has the 
+counter-intuitive attribute that by limiting the scope we allow creativity to 
+flourish]{.aside}
+
+The Bioinformatics programming environment is heavily influenced and largely relies
+upon the Unix environment^[as you will see bioinformaticians ❤️ line-oriented
+text files] but also extend it to address the needs of the field. The primary
+object of bioinformatics analysis are sequences and intervals so the tools and
+data structures developed are oriented around them. 
+
+As a programming environment, bioinformatics occupy a niche between handling
+simple text-files, which is the purview of the Unix-like systems, and statistical/
+data analysis environments which are organized primarily around tabular data
+(matrices and data-frames). It is also less integrated than its famous counter-parts 
+in those other fields.
+
+Although they often interact with each other, one could distinguish 3 main 
+components of this environment based on the programming language they are built 
+upon:
+
+- **Command-line** tools: consist mostly of text editing tools (integrate with
+  the standard Unix environment) and highly efficient programs that do the
+  standardize "heavy lifting", in terms of computational demands, of bioinformatics.
+  Less useful for exploratory analysis and visualization.
+- **R/Bioconductor**: the most complete and "explicitly" designed bioinformatics
+  environment. It builds upon the `R` programming language which excels at data 
+  analysis and visualization. It "struggles" to deal with large data that do not 
+  fit into memory.
+- **Python**: in-between the previous 2 environments. It is less integrated than 
+  the other two, though there are efforts to improve this. Less tools and 
+  out-of-the-box features than Bioconductor but it integrates better with the OS
+  which allow it to deal with out-of-memory data.
+
+Part of the environment are also all the standards/formats used to store and access
+data. These are largely language-agnostic, as they tend to be simple text files or
+their binary counter-parts meant to achieve compression and/or faster access.
+
+Here, we will explore these primary object, what they are and why they offer the
+right level of abstraction, and we are going to introduce the formats and the main
+computational tools use to model these objects.
+
+## Basic Workflow
+
+```{mermaid}
+flowchart TD
+    Raw["Reads\n[fastq]"] --- QC(("QC")) 
+    QC --- Reads["Reads\n[fastq]"]
+    Reads --> Aligner((Aligner)) 
+    Ref[("Reference\n[fasta]")] -- index --> Aligner
+    Aligner --> Sam["Alignment\n[sam]"]
+    Sam --- QC2(("QC &\nIndex")) 
+    QC2 --- Bam["Alignment\n[bam]"]
+    Bam --> Overlap((Overlap))
+    Features[("Features\n[bed/gff3]")] -.-> Overlap
+    Overlap --> Coverage["Coverage\n[bigWig]"]
+    Coverage --> Analysis(("Differential\nAnalysis"))
+```
+
+As an example, Bioconductor (paper [here](https://doi.org/10.1038/nmeth.3252))
+provides packages for every step:
+
+![](figures/bioconductor_workflow.png)
+
+## Sequences
+
+<!-- Why specialized structures are necessary -->
+Sequences are the primary data objects of bioinformatics. Although all programming
+languages have libraries to deal with strings of characters, biological sequences
+differ enough from standard string to justify the development of specific data 
+structures and methods to facilitate their analysis. Some key characteristics that 
+separate biological sequences from standard character strings:
+
+- They are generated from limited alphabets (compared to unicode eg) such as the
+  4-letter alphabet or DNA/RNA nucleotides or the 20-letter amino-acid one.
+- Some of them are circular
+- They must support biology-specific operations such as:
+  + translation (RNA to amino-chain)
+  + reverse complement
+  + approximate matching
+- Whole genome sequences are usually Gb-long strings so the data structures that
+  support these sequences must balance requirements like:
+  + efficient storage
+  + fast random access
+  + avoidance of unnecessary copying
+  + immutability 
+
+### File Format
+
+Most sequence file-formats are simple text files. As with most bioinformatic format they
+strive to be line-oriented so as integrate better with the Unix ecosystem. 
+
+The most common format to store sequences are FASTA for "static" long sequences 
+like whole-genomes and FASTQ for dynamic short sequences like the output of a 
+sequencing experiment. Both are line-oriented text files. They are commonly 
+compressed (via `gzip` or `bzip2`) for long term storage.
+
+#### FASTA
+
+<!-- Use cases -->
+The [FASTA](https://en.wikipedia.org/wiki/FASTA_format), named after 
+[the software that first specified it](https://en.wikipedia.org/wiki/FASTA), is
+the standard for storing static biological sequences. "Static" is meant to contrast
+it with the FASTQ format that besides the sequence also encode a measure of 
+uncertainty about it. The specifications are:
+
+<!-- Specification -->
+- **Multiple sequences** may be stored in 1 file
+- Every sequence starts with a **header line**, denoted with `>`.
+  Header lines include the Sequence ID, immediately after the `>`, and then a
+  white-space followed optionally by a longer description. The 
+  [NCBI specifications](https://www.ncbi.nlm.nih.gov/genbank/fastaformat/)  
+  include details for how to format the header line.
+- Sequences are represented with **single character** [codes](https://www.bioinformatics.org/sms/iupac.html)
+  And may include new-line breaks (*interleaved*) or not (*sequential*). If
+  a sequence spans multiple lines, the maximum line length must be fixed (usually 80)
+  except perhaps for the last line.
+
+Example:
+
+```
+>PROT_SEQ_1
+MTEITAAMVKELRESTGAGMMDCKNALSETNGDFDKAVQLLREKGLGKAAKKADRLAAEG
+LVSVKVSDDFTIAAMRPSYLSYEDLDMTFVENEYKALVAELEKENEERRRLKDPNKPEHK
+IPQFASRKQLSDAILKEAEEKIKEELKAQGKPEKIWDNIIPGKMNSFIADNSQLDSKLTL
+MGQFYVMDDKKTVEQVIAEKEKEFGGKIKIVEFICFEVGEGLEKKTEDFAAEVAAQL
+>PROT_SEQ_2 Longer description
+SATVSEINSETDFVAKNDQFIALTKDTTAHIQSNSLQSVEELHSSTINGVKFEEYLKSQI
+ATIGENLVVRRFATLKAGANGVVNGYIHTNGRVGVVIAAACDSAEVASKSRDLLRQICMH
+```
+
+<!-- Naming Conventions -->
+FASTA files are typically named with the `.fasta` or `.fa` extension, but other
+[variants](https://en.wikipedia.org/wiki/FASTA_format#Filename_extension) may be
+used to indicate the type of sequence.
+
+#### FASTQ
+
+<!-- Use cases -->
+The [FASTQ](https://en.wikipedia.org/wiki/FASTQ_format) format is an extension of
+the FASTA format that includes quality scores per residue. It is the *de facto*
+standard for storing the results of sequencing experiments as it is the default
+output of most sequencers^[Some sequencers output pairs of files FASTA + QUAL 
+using the same SeqIDs] and the preferred format for uploading them to online databases.
+
+<!-- Specification -->
+The standard format uses 4 lines to store a sequence, multiple sequences are allowed
+per file:
+
+1. **header** starting with `@` followed by sequence ID and optional description.
+   Illumina generated fastqs follow 
+   [further conventions](https://support.illumina.com/help/BaseSpace_Sequence_Hub/Source/Informatics/BS/FileFormat_FASTQ-files_swBS.htm)
+2. **sequence** using single-letter code
+3. **separator** usually only contains a `+` but may be optionally followed by 
+   the *same* seqID as header. (Used to indicate the end of sequence if it spans multiple lines.)
+4. **quality scores** same length as sequence encoded as ASCII characters using the Phred specification.
+   (If the sequence spans multiple lines then the scores must match its format)
+
+Examples:
+
+```
+@SEQ_ID
+GATTTGGGGTTCAAAGCAGTATCGATCAAATAGTAAATCCATTTGTTCAACTCACAGTTT
++
+!''*((((***+))%%%++)(%%%%).1***-+*''))**55CCF>>>>>>CCCCCCC65
+@SRR001666.1 071112_SLXA-EAS1_s_7:5:1:817:345 length=36
+GGGTGATGGCCGCTGCCGATGGCGTCAAATCCCACC
++SRR001666.1 071112_SLXA-EAS1_s_7:5:1:817:345 length=36
+IIIIIIIIIIIIIIIIIIIIIIIIIIIIII9IG9IC
+```
+
+<!-- Naming Conventions -->
+Fastq files are typically named with the `.fastq` or `.fq` extension. If the reads
+are generated in pairs, then mate-pairs are usually stored as separate files that
+are named with an `_R1`/`_R2` or `_1`/`_2` "field" and the mated sequences share 
+the same order and ID. Alternatively, they may be stored in the same file and the 
+sequence ID is used to indicate pairs. Pairs are stored in the same order in both
+files to facilitate faster processing (no need for quering for sequence ids) and
+most programs expect the ordering to be the same. Illumina generated fastqs again 
+have their own [naming conventions](https://support.illumina.com/help/BaseSpace_OLH_009008/Content/Source/Informatics/BS/NamingConvention_FASTQ-files-swBS.htm)
+
+##### Phred
+
+<!-- error model: https://data-science-sequencing.github.io/Win2018/lectures/lecture3/ -->
+
+<!-- Quantify uncertainty of physical signal -->
+The [Phred score](https://en.wikipedia.org/wiki/Phred_quality_score), named after 
+the [software](https://en.wikipedia.org/wiki/Phred_(software)) that first defined 
+it, is a measure of the confidence we have in the "base called" at the corresponding 
+position. It was initially calculated for electrophoresis-based sequencer but it
+is generalized to quantify the uncertainty of the base calling process, regardless 
+of the physical signal used to encode it.
+
+<!-- Probability to Letters -->
+To calculate the Phred value we start with an estimate of the probability of error 
+$P$ for the corresponding base and then:
+
+1. Transform it to quality value: $Q = -10\log_{10} P$^[Solexa uses the odds ratio
+   $P/(1-P)$ instead of $P$]
+2. Round to the nearest integer and offset by a fixed number
+3. Map the resulting integer to a character using the `ASCII` code
+
+The magnitude of the offset in step 2 gives the name to the Phred score. The most
+common is `Phred33`. Below are some functions that map between probability, 
+qualities, and Phred characters.
+
+::: panel-tabset
+
+### R
+
+```{.r}
+Phred <- function(Q, offset = 33L)
+    intToUtf8(Q + offset)  # utf-8 preserves the full US-ASCII range
+
+PhredToQ <- function(P, offset = 33L)
+    utf8ToInt(P) - offset
+
+P2Q <- function(P)
+    as.integer(round(-10. * log10(P)))
+
+Q2P <- function(Q)
+    10. ^ (-0.1 * Q)
+```
+
+### Python
+
+```{.python}
+from math import log10
+
+
+def Phred(Q, offset=33):
+    return chr(Q + offset)
+
+def PhredToQ(P, offset=33L):
+    return ord(P) - offset
+
+def P2Q(P):
+    return int(round(-10. * log10(P)))
+
+def Q2P(Q):
+    return 10. ** (-0.1 * Q)
+```
+
+:::
+
+`Phred33` uses ASCII characters from 33 to 126:
+
+![from [Galaxy Training](https://training.galaxyproject.org/training-material/topics/sequence-analysis)](figures/fastq-quality-encoding.png)
+
+```{r}
+#| label: Phred
+#| layout-nrow: 1
+#| fig-cap: [linear, logarithmic]
+#| column: body-outset
+
+Phred <- function(Q, offset = 33L) intToUtf8(Q + offset) 
+Q2P <- function(Q) 10. ^ (-0.1 * Q)
+
+Q <- 0:41
+thresholds <- c(20, 28)
+P <- Q2P(Q)
+ASCII <- sapply(Q, Phred)
+plot(P, Q, type = "n", frame.plot = FALSE,
+     main = "Phred+33 Score", 
+     xlab = "Probability of Error", 
+     ylab = "Quality Score")
+abline(h = thresholds, col = 2:3)
+text(c(1, 1) * .7, thresholds + 1.5 * c(-1, 1), 
+     paste(c("Low", "High"), "Quality"), col = 2:3)
+text(P, Q, ASCII, cex = rev(Q+1)/10/3, family = "mono")
+
+P <- log10(P)
+plot(P, Q, type = "n", frame.plot = FALSE,
+     main = "Phred+33 Score", 
+     xlab = "Probability of Error", xaxt = "n",
+     ylab = "Quality Score")
+axis(1, -4:0, sapply(-4:0, function(x) as.expression(bquote(10^.(x)))))
+abline(h = thresholds, col = 2:3)
+text(c(1, 1) * -.5, thresholds + 1.5 * c(-1, 1), 
+     paste(c("Low", "High"), "Quality"), col = 2:3)
+text(P, Q, ASCII, family = "mono")
+```
+
+#### Other Formats
+
+- [faidx](http://www.htslib.org/doc/faidx.html) is used to index FASTA and FASTQ
+  files in order to facilitate random access (it basically stores byte offsets).
+  The index is stored as a separate file with the added suffix `.fai`
+- [2bit](https://genome.ucsc.edu/FAQ/FAQformat.html#format7): to store multiple 
+  DNA sequences in a compact randomly-accessible format.
+
+### Command Line
+
+The choice of line-oriented text-files as the format of choice has two main advantages.
+The first is *interoperability*; text file are language agnostic and are going to 
+be around as long as humans operate computers. Second, we can take advantage of all
+the Unix utilities, like `grep`, `sed`, and `awk`, that are built around text files.
+Novel utilities, that facilitate common bioinformatic tasks, have also been developed.
+Some notable examples are:
+
+- [fastqc](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/): performs
+  quality control based on sequence and quality scores alone.
+- [cutadapt](https://cutadapt.readthedocs.io/) clean sequences from artifacts.
+- [TrimGalore](https://github.com/FelixKrueger/TrimGalore) combines `fastqc` and `cutadapt`
+- [seqtk](https://github.com/lh3/seqtk): lightweight tool for processing FASTQ & FASTA 
+  (commonly used for subsampling)
+- [fastp](https://github.com/OpenGene/fastp): all-in-one preprocessing + QC for FASTQ files.
+
+### R/Bioconductor
+
+In the R/Bioconductor environment, the 
+[Biostrings](https://bioconductor.org/packages/Biostrings/) is used represent
+biological sequences and define the relative methods (including I/O) and constants. 
+The [BSgenome](https://bioconductor.org/packages/BSgenome/) 
+package is the basis for retrieving and interacting *genomes* in memory
+(eg [hg19](https://bioconductor.org/packages/BSgenome.Hsapiens.UCSC.hg19/), 
+[hg38](https://bioconductor.org/packages/BSgenome.Hsapiens.UCSC.hg38/), 
+[mm10](https://bioconductor.org/packages/BSgenome.Mmusculus.UCSC.mm10/))
+
+```{r}
+#| label: Biostrings
+#| eval: false
+#| echo: true
+
+generate_random_seq <- function(L) {
+    # L: length of sequence
+    sample(DNA_ALPHABET[1:4], L, replace = TRUE) |> 
+        paste(collapse = "") |> 
+        DNAString()
+}
+reads <- DNAStringSet(replicate(10L, generate_random_seq(60L)))
+
+# subsetting
+substr(reads, 1, 10) # to character string
+subseq(reads, 1, 10) # returns DNAStringSet
+Views(reads[[1]], 1:5, 3:7)  # first 5 3-mers of 1st read
+
+# biological transformation
+complement(reads)
+reverseComplement(reads)
+RNAStringSet(reads)
+translate(reads)  # to protein
+
+# matching
+matchPattern("CG", reads[[1]]) # also ?countPattern
+vmatchPattern("CG", reads) # also ?vcountPattern
+
+# Frequencies
+letterFrequency(reads, "CG") # how many Cs or Gs, also ?letterFrequencyInSlidingView
+alphabetFrequency(reads, as.prob = TRUE)[, 1:4] # also ?oligonucleotideFrequency
+consensusMatrix(reads, as.prob = TRUE)[1:4, ]  # by position
+```
+
+### BioPython
+
+Biopython has a more modular approach to sequences. The main libraries involved are:
+
+- [Seq](https://biopython.org/wiki/Seq): basic sequence representation
+- [SeqRecord](https://biopython.org/wiki/SeqRecord): annotated sequences (parses header line)
+- [SeqIO](https://biopython.org/wiki/SeqIO): read/write sequence to files
+
+```{python}
+#| label: Bio.Seq
+#| echo: true
+#| eval: false
+
+from Bio.Seq import Seq
+
+dna_seq = Seq("AGTACACTGGTA")
+
+# subsetting
+str(dna_seq)  # back to string
+dna_seq[:3]  
+
+# biological transformation
+dna_seq.complement()
+dna_seq.reverse_complement()
+dna_seq.transcribe()
+dna_seq.translate()
+
+# matching
+dna_seq.find("ACT")
+
+# Frequencies
+dna_seq.count_overlap("AA")
+```
+
+There is no pre-packaged reference genomes for Python so you'll have to download
+your own either from [Ensembl](https://www.ensembl.org/index.html) or 
+[UCSC](https://hgdownload.soe.ucsc.edu/downloads.html), or
+[iGenome](https://sapac.support.illumina.com/sequencing/sequencing_software/igenome.html)
+or from "our own" server: `/gpfs/data/igorlab/ref` 
+(direct your thanks to [Igor Dolgalev](mailto:Igor.Dolgalev@nyulangone.org))
+
+## Genomic Coordinates
+
+![Chromatin Architecture](https://upload.wikimedia.org/wikipedia/commons/thumb/f/fd/Chromosome_en.svg/419px-Chromosome_en.svg.png)
+
+
+The space in which the phenomena we are going to study unfold is the genome.
+As a *space* the genome is not like the spaces most of us are familiar with (Euclidean).
+
+- it is not *infinite*
+- it is not *continuous* (base-pairs are discrete)
+- it is not *connected* (unless there is only 1 chromosome)
+- it is not *homogeneous* ("mappability" is affected by sequence content)
+
+![Cartesian vs Genomic Coordinates](figures/genomic_coordinates-01.svg)
+
+To define a point in this space we need 3 pieces of information:
+
+1. **Chromosome** or **contig**: which connected component it belongs to
+2. **Position**: linear offset from the "start" of the chromosome
+3. **Strand**: positive/forward or negative/reverse
+
+<!-- Strandness -->
+The 2 DNA strands have a [natural orientation](https://en.wikipedia.org/wiki/Directionality_(molecular_biology)) 
+in the sense that *in vivo* strands are synthesized 1 nucleotide at a time towards 
+from **5'** to **3'**. The two strands run anti-parallel to each other thus the 
+sequence of one is the *reverse complement* of the other. The distinction between
+positive/forward and negative/reverse in arbitrary in the DNA context. 
+The *strandness* defines the relative coordinates:
+
+- **Down-stream**: towards 3'
+- **Up-stream**: towards 5'
+- If strandness is not explicitely defined it is assume it refers to the forward strand.
+
+![Strand orientation](https://upload.wikimedia.org/wikipedia/commons/d/d3/0322_DNA_Nucleotides.jpg)
+
+## Alignments
+
+<!-- Define Reads and Library. Set the current step: FASTQ -> SAM -->
+Sequencing experiment turn DNA fragments into *reads* (alternatively *tags*). 
+From our bioinformatic point of view, DNA sequencers turn biological material into 
+a FASTQ files. The next step is to transform these FASTQ files into SAM files.
+
+[The set of unique, ie not counting clones, fragments input to the machine, ie
+not the set of all fragments read, is called the *library*.]{.aside}
+
+<!-- Reads as particles -->
+Although the result of a sequencing experiment is a set of reads (in the form of
+fastq files) what these reads encode depends on the experimental design. Based on
+the "simple" technology of reading DNA fragments, scientists have developed an 
+array of assays to measuring multiple biological signal. In this framework, reads
+are essentially the physics equivalent of "particles", they carry/quantize the 
+signal they are meant to encode. Once they have been positioned in a reference 
+frame, they can be aggregated and characterize the space (genome) we are interested in.
+
+Some signals encoded in reads are:
+
+- For variant calling: nucleotide frequency
+- RNAseq: transcription rate
+- Bisulphite seq: methylation rate
+- ChIPseq: protein binding
+- ATACseq: chromatin accessibility
+- HiC: chromatin connectivity
+
+<!-- Alignment == assign coordinates -->
+So unless we want to assemble the genome *de novo*, reads are not very useful in 
+isolation. The main utility of a read sequences is to **align** it to a known 
+(reference) genome and thus endow it with coordinates. Alignment is a central task 
+of bioinformatics and we will study it in detail later, here we are just going to
+treat it as a black box that assign coordinates to reads. The result of this
+process is a file of reads with coordinates usually written using the SAM format.
+
+### SAM/BAM Formats
+
+The [SAM](https://pubmed.ncbi.nlm.nih.gov/19505943/) (Sequence Alignment/Map) is 
+rather complex to describe here in detail.The specification can be found 
+[here](https://samtools.github.io/hts-specs/SAMv1.pdf). It was developed as part
+of [samtools](http://www.htslib.org/) which is a suite of utilities for
+interacting with SAM/BAM files.
+
+SAM is a text-based, line-oriented, TAB-delimited format. It is meant to contain
+all the information generated by an aligner. It consists of 2 sections
+
+1. *Header*: contains meta-data that help interpret and reproduce the alignment results.
+2. *Body*: 1 line per aligned read 
+
+Header lines start with `@` and are organized as `@TAG:TYPE:VALUE` pairs. Some tags 
+are mandatory as they are needed to interpret the results. The list of standard
+tags can be found [here](https://samtools.github.io/hts-specs/SAMtags.pdf).
+The user can specify extra columns or add comments as well.
+
+The main body consists of 11 mandatory fields plus whatever extra user (aligner)
+defined ones. The 11 mandatory fields are:
+
+1.  `QNAME` the name of the read (query). Taken from fastq header line.
+2.  `FLAGS` a number that in binary form answer some yes/no questions about the alingment.
+    You can interpret the number [here](https://broadinstitute.github.io/picard/explain-flags.html)
+3.  `RNAME` the name of the reference sequence (usually chromosome)
+4.  `POS` the 1-based start position of alignment.
+5.  `MAPQ` MAPping (aka alignment) Quality score (Phred scale). Originally developed for
+    the [MAQ aligner](https://genome.cshlp.org/content/suppl/2008/09/26/gr.078212.108.DC1/maq-supp.pdf)
+    but each aligner can estimate it differently.
+6.  `CIGAR` (Concise Idiosyncratic Gapped Alignment Report) a compressed (RLE) 
+    representation of the alignment.
+7.  `RNEXT` only relevant for paired-end reads; `RNAME` of mate read
+8.  `PNEXT` only relevant for paired-end reads; `POS` of mate read
+9.  `TLEN` only relevant for paired-end reads; fragment length inferred from alignment
+10. `SEQ` sequence (or reverse complement if the read is aligned to the reverse strand), 
+    aka 2nd line of fastq-entry.
+11. `QUAL` quality sequence aka 4th line of fastq-entry
+
+Though not mandatory, 3 extra columns are commonly defined:
+
+- `AS:i`: the alignment score, quantifies the similarity between read and reference
+- `MD:Z`: auxiliary string to `CIGAR` encoding insertions and deletions (indels)
+
+An example is shown below:
+
+```{bash}
+#| label: SAM_example
+#| eval: true
+#| column: page
+
+cat figures/sam_example.txt
+```
+
+The header informs us that the file is:
+
+- `SO:coordinate`: sorted by coordinate
+- There are 7 chromosomes (`@SQ`) and their length (`LN`)
+- The programs used to create the file (`@PG`)
+
+And then for each read we can see where it aligns starting with the first.
+
+SAM files can get very big and unwieldy, so they can transformed into BAM files
+which are their binary equivalent and then be indexed to allow for random access^[
+the previous file is actually a BAM visualized as a SAM, `samtools view -b` transforms it].
+The index is stored as a separate file in the same directory. BAM files can be 
+further compressed, possibly lossly, to [CRAM](https://pubmed.ncbi.nlm.nih.gov/21245279/) 
+files.
+
+SAM files use the `.sam` extension, BAM files the `.bam`, and bam indexes append 
+to the file name the extension `.bai` while cram indexes use the `.crai` extension.
+
+All the SAM/BAM related specification are listed [here](https://github.com/samtools/hts-specs).
+For a tutorial see [here](http://quinlanlab.org/tutorials/samtools/samtools.html).
+
+### SAM/BAM related utilities
+
+Besides `samtools`, 
+
+- [picard](https://broadinstitute.github.io/picard/) is the other popular command 
+  line tools tool used to interact with sam/bam files. 
+- [Rsamtools](https://bioconductor.org/packages/Rsamtools/) is the standard 
+  Bioconductor packages that interfaces with samtools
+- [pysam](https://pysam.readthedocs.io) is the standard Python package that wraps samtools
+
+
+## Intervals
+
+<!-- Intervals == reads & building blocks for annotations --> 
+Since fragments have length, once they are mapped to the genome they define 
+genomic intervals. Besides representing reads, genomic intervals are also used
+to encode qualitative information, namely annotated genomic features. Consequently,
+genomic intervals are arguably *the* central object of bioinformatic analysis 
+around which a lot of computational infrastructure has developed. This infrastructure
+include data structures to represent intervals as well as intra and inter interval
+transformations. 
+
+For pieces of information are required to specify an interval:
+
+1. **Chromosome**
+2. **Start Position**
+3. **End Position** or **Width**
+4. **Strandness** (when relevant)
+
+In this section, we will focus on intervals carrying quantitative information
+and in the next we will focus on qualitative information (annotations).
+
+### Operations
+
+There are 2 types of operation acting on intervals:
+
+- **intra-interval**: transform one interval into another but altering one or
+  more of its characteristics
+- **inter-interval**: revolved around the notion of *overlap* between 2 or more
+  intervals or groups of intervals. The ideas involved here extend 
+  [Allen's interval algebra](https://en.wikipedia.org/wiki/Allen%27s_interval_algebra)
+  which was developed for time intervals (also 1-dimensional).
+
+Below we demonstrate some of them, as implemented in R/Bioconductor but the concepts
+are mostly language-agnostic. We distinguish between intervals that have (`GRanges`)
+or don't have (`IRanges`) strand information as this affect the notion of start/end.^[
+We do not consider trans-chromosomal operations at this point]
+
+#### Intra Interval Operations
+
+```{r}
+#| label: intra_range_op
+#| echo: false
+#| column: page
+#| layout-nrow: 1
+#| fig-width: 9
+#| fig-height: 8
+#| fig-cap: [Unstranded, Stranded]
+
+
+# IRanges -----------------------------------------------------------------
+
+plotir <- function(ir, i) arrows(start(ir)-.5, i, 
+                                 end(ir)+.5,   i, 
+                                 code = 3, angle = 90, lwd = 3)
+
+ir <- IRanges(5,10)
+# Draw Frame & Axes
+plot(0, 0, type="n", 
+     xlab="", ylab="", 
+     xlim=c(0, 23), ylim=c(0, 13), 
+     frame.plot = F, xaxt="n", yaxt="n")
+
+# axis(1, 1:14)
+abline(v = 0:14 + .5, col = rgb(0, 0, 0, .5))
+
+# draw a red shadow for the original IRange
+polygon(c(start(ir) - .5, start(ir) - .5, 
+          end(ir) + .5  , end(ir) + .5),
+        c(-1, 15, 15, -1), 
+        col = "#00000033", border=NA)
+
+# Draw Ranges
+plotir(ir, 1)
+plotir(shift(ir,-2), 2)
+plotir(narrow(ir, start=2), 3)
+plotir(narrow(ir, end=5), 4)
+plotir(flank(ir, width=3, start=TRUE,  both=FALSE), 5)
+plotir(flank(ir, width=3, start=FALSE, both=FALSE), 6)
+plotir(flank(ir, width=3, start=TRUE,  both=TRUE), 7)
+plotir(ir * 2, 8)
+plotir(ir * -2, 9)
+plotir(ir + 2, 10)
+plotir(ir - 2, 11)
+plotir(resize(ir, 1), 12)
+
+# Draw Text
+text(rep(15, 12), 1:12,
+     c("ir", 
+       "shift(ir, -2)", 
+       "narrow(ir, start=2)", 
+       "narrow(ir, end=5)", 
+       "flank(ir, start=T, both=F)", 
+       "flank(ir, start=F, both=F)", 
+       "flank(ir, start=T, both=T)", 
+       "ir * 2",
+       "ir * -2",
+       "ir + 2",
+       "ir - 2",
+       "resize(ir, 1)"),
+     pos=4, family = "mono")
+
+
+# GRanges -----------------------------------------------------------------
+
+gr_f <- GRanges("chr1", ir, strand = "+")
+gr_b <- GRanges("chr1", ir, strand = "-")
+# Draw Frame & Axes
+plot(0, 0, type="n", 
+     xlab="", ylab="", 
+     xlim=c(0, 23), ylim=c(0, 13), 
+     frame.plot = FALSE, xaxt="n", yaxt="n")
+# axis(1, 1:14)
+abline(v = 0:14 + .5, col = rgb(0, 0, 0, .5))
+
+plotgr <- function(gr, i) 
+    arrows(start(gr) - .5, i, end(gr) + .5  , i, 
+           length = .1, angle = 45, lwd = 3,
+           code = ifelse(strand(gr) == "+", 2, 1), 
+           col = ifelse(strand(gr) == "+", "black", "red3"))
+
+# draw a red shadow for the original GRange
+polygon(c(start(ir) - .5, start(ir) - .5, 
+          end(ir) + .5, end(ir) + .5), 
+        c(-1, 15, 15, -1), 
+        col = "#00000033", border = NA)
+
+# Draw Ranges
+sep <- -0.2
+plotgr(gr_f, 1 - sep)
+plotgr(gr_b, 1 + sep)
+plotgr(shift(gr_f, -2), 2 - sep)
+plotgr(shift(gr_b, -2), 2 + sep)
+plotgr(narrow(gr_f, start=2), 3 - sep)
+plotgr(narrow(gr_b, start=2), 3 + sep)
+plotgr(narrow(gr_f, end=5), 4 - sep)
+plotgr(narrow(gr_b, end=5), 4 + sep)
+plotgr(flank(gr_f, width=3, start=TRUE,  both=FALSE), 5 - sep)
+plotgr(flank(gr_b, width=3, start=TRUE,  both=FALSE), 5 + sep)
+plotgr(flank(gr_f, width=3, start=FALSE, both=FALSE), 6 - sep)
+plotgr(flank(gr_b, width=3, start=FALSE, both=FALSE), 6 + sep)
+plotgr(flank(gr_f, width=3, start=TRUE, both=TRUE), 7 - sep)
+plotgr(flank(gr_b, width=3, start=TRUE, both=TRUE), 7 + sep)
+plotgr(gr_f * 2, 8 - sep)
+plotgr(gr_b * 2, 8 + sep)
+plotgr(gr_f * -2, 9 - sep)
+plotgr(gr_b * -2, 9 + sep)
+plotgr(gr_f + 2, 10 - sep)
+plotgr(gr_b + 2, 10 + sep)
+plotgr(gr_f - 2, 11 - sep)
+plotgr(gr_b - 2, 11 + sep)
+plotgr(resize(gr_f, 1), 12 - sep)
+plotgr(resize(gr_b, 1), 12 + sep)
+# Draw Text
+text(rep(15, 12), 1:12, 
+     c("gr", 
+       "shift(gr, -2)",
+       "narrow(gr, start=2)", 
+       "narrow(gr, end=5)",
+       "flank(gr, start=T, both=F)", 
+       "flank(gr, start=F, both=F)",
+       "flank(gr, start=T, both=T)", 
+       "gr * 2",
+       "gr * -2",
+       "gr + 2",
+       "gr - 2",
+       "resize(gr, 1)"), 
+     pos=4, family = "mono")
+```
+
+#### Inter Interval Operations
+
+```{r inter_irange_op}
+#| label: inter_range_op
+#| echo: false
+#| column: page
+#| layout-nrow: 1
+#| fig-width: 5
+#| fig-height: 7
+#| fig-cap: [Unstranded, Stranded]
+
+
+# IRanges -----------------------------------------------------------------
+
+# from: https://github.com/genomicsclass/labs/blob/master/biocintro_5x/bioc1_igranges.Rmd
+plotRanges <- function(x, xlim = NULL, main = deparse(substitute(x)), 
+                       col = "black", sep = 0.5, height = 1, ...) {
+    if (is.null(xlim))
+        xlim <- c(min(start(x)), max(end(x)))
+    bins <- disjointBins(IRanges(start(x), end(x) + 1))
+    plot.new()
+    plot.window(xlim, c(0, max(bins)*(height + sep)))
+    ybottom <- bins * (sep + height) - height
+    rect(start(x)-sep, ybottom, end(x)+sep, ybottom + height, col = col, ...)
+    title(main)
+    axis(1)
+    invisible(bins)
+}
+
+ir <- IRanges(c(3, 8, 14, 15, 19, 34, 40), width = c(12, 6, 6, 15, 6, 2, 7))
+
+xlim <- c(0, 50)
+par(mfrow=c(5,1), mar=c(4,2,2,2))
+plotRanges(ir, xlim)
+plotRanges(range(ir), xlim)
+plotRanges(reduce(ir), xlim)
+plotRanges(disjoin(ir), xlim)
+plotRanges(gaps(ir), xlim)
+
+
+# GRanges -----------------------------------------------------------------
+
+box_arrow <- function(x0, x1, y, width = .5, len = 0.2, border = "black", ...) {
+    tip <- c(x1, y)
+    x1 <- x1 - len * (x1 - x0)
+    x <- c(x0, x1)
+    y <- y + c(-1, 1) * width
+    polygon(c(x[1], x[2], tip[1], x[2], x[1], x[1]),
+            c(y[1], y[1], tip[2], y[2], y[2], y[1]),
+            border = border, ...)
+}
+
+plotGRanges <- function (x, xlim = NULL, ymax = 0, sep = 0.5, height = 0.5,
+                         main = deparse(substitute(x)), bins = NULL, ...)  { 
+    ch <- as.character(seqnames(x)[1])
+    if (is.null(xlim))
+        xlim <- c(min(start(x)), max(end(x)))
+    if (is.null(bins)) {
+        bins <- disjointBins(IRanges(start(x), end(x) + 1)) # +1 to avoid contiguous segments
+        y <- bins * (sep + height) - height 
+    } else {
+        y <- bins
+    }
+    ymax <- ifelse(ymax == 0 || ymax < max(bins), max(bins), ymax)
+    plot.new()
+    plot.window(xlim = xlim, c(0, ymax * (height + sep)))
+    x0  <- ifelse(strand(x) == "+", start(x) -.5, end(x) + .5)
+    x1  <- ifelse(strand(x) == "+", end(x) + .5, start(x) -.5)
+    col <- ifelse(strand(x) == "+", "black", "red3")
+    for (k in seq_len(length(x))) box_arrow(x0[k], x1[k], y[k], col = col[k], width = 0.5 * height, ...)
+    title(main, xlab = ch)
+    axis(1)
+    invisible(bins)
+}
+
+ir <- IRanges(c(3, 8, 14, 15, 19, 34, 40), width = c(12, 6, 6, 15, 6, 2, 7))
+gr <- GRanges(seqnames="chr1", ir, strand = Rle(c("+", "-"), c(4, 3)))
+
+xlim <- c(0, 50)
+ymax <- 3
+par(mfrow=c(4, 1), mar = c(4, 2, 2, 2))
+plotGRanges(gr,          xlim, ymax)
+plotGRanges(reduce(gr),  xlim, ymax)
+plotGRanges(disjoin(gr), xlim, ymax)
+plotGRanges(gaps(gr),    xlim, ymax)
+```
+
+#### Interval Linking Operations
+
+A special type of inter-interval operations. They apply to a single interval and
+and identify other intervals in a set that have a specific relationship to it.
+Examples of such relationships are:
+
+- `nearest`
+- `preceding`
+- `following`
+
+```{r}
+#| label: range_link_op
+#| echo: false
+#| column: page
+#| layout-nrow: 1
+#| fig-width: 5
+#| fig-height: 7
+#| fig-cap: [Unstranded, Stranded]
+
+
+# IRanges -----------------------------------------------------------------
+
+plotRangesEdges <- function(x, edges, xlim = NULL, main = deparse(substitute(edges)),   
+                            col = "black", sep = 0.5, height = 1, nudge = 0, ...) {
+    
+    bins <- plotRanges(x, xlim = xlim, main = main, col = col, sep = sep, ...)
+    ybottom <- bins * (sep + height) - height
+    mids <- floor(start(x) + width(x) * .5)
+    nudge <- rnorm(length(mids), 0, height) * nudge
+    arrows(mids + nudge, ybottom + .5*height + nudge, 
+           mids[edges] + nudge, ybottom[edges] + .5*height + nudge, 
+           length = .1, lwd=2, col=col)
+}
+
+ir <- IRanges(c(10, 14, 22, 35, 40), width = c(5, 5, 6, 2, 7))
+par(mfrow=c(3, 1), mar = c(4, 2, 2, 2))
+plotRangesEdges(ir, nearest(ir), col=1:5, nudge=.25)
+plotRangesEdges(ir, follow(ir), col=1:5)
+plotRangesEdges(ir, precede(ir), col=1:5)
+
+
+# GRanges -----------------------------------------------------------------
+
+plotGRangesEdges <- function(x, edges, xlim = NULL, ymax = 0, sep = 1, height = 1,
+                             main = deparse(substitute(edges)), nudge = 0, bins, ...)  { 
+    plotGRanges(x, xlim = xlim, ymax = ymax, sep = sep, height = height, 
+                main = main, bins = bins, ...)
+    ## Draw edges
+    y <- bins
+    mids <- start(x) + width(x) * .5
+    nudge <- rnorm(length(mids)) * nudge
+    arrows(mids + nudge, y + nudge, 
+           mids[edges] + nudge, y[edges] + nudge, 
+           length = .1, lwd=2.5, lty=1, col=3)
+    ##
+    axis(2, at = c(height, 2*height), c("reverse", "forward"), col = NA)
+}
+
+ir <- IRanges(c(1, 5, 10), width = 3)
+gr <- expand.grid(r1 = c("-", "+"), r2 = c("-", "+"), stringsAsFactors = FALSE) |>  # all combos of 2 strands
+    with(matrix(c(r1, rep("+", 4), r2), ncol = 3L)) |> # middle range always "+" (symmetric)
+    apply(1L, function(x) GRanges(seqnames = "chr", ir, strand = x)) |> # make 3 intervals
+    GRangesList() |> stack() |>  # combine all intervals in 1 GRanges
+    shift(rep(0:3 * 20, each = 3))  # separate triplets by 20bp
+
+bins <- ifelse(strand(gr) == "+", 2, 1)
+par(mfrow=c(4, 1), mar = c(4, 2, 2, 2))
+plotGRangesEdges(gr, nearest(gr), bins = bins, nudge = 0.1)
+plotGRangesEdges(gr, nearest(gr, ignore.strand = TRUE), bins = bins, nudge = 0.1)
+plotGRangesEdges(gr, follow(gr), bins = bins, nudge = 0.1)
+plotGRangesEdges(gr, precede(gr), bins = bins, nudge = 0.1)
+```
+
+```{r inter_coverage}
+#| label: coverage
+#| echo: false
+#| column: margin
+#| fig-width: 5
+#| fig-align: center
+
+plotRanges(ir, xlim, main = "Coverage", col = "black", sep = 0, border = "white", lwd = 2)
+axis(2, at = 0:4)
+lines(coverage(ir), col = 2, lwd = 5)
+```
+
+![https://doi.org/10.1038/nbt.1754](figures/igv_paper.webp)
+
+### BED
+
+The *de facto* standard file format used to store genomic intervals is the BED 
+(Browser Extensible Data) format. As the name suggest, the format was co-opted as
+it initially defined to represent data in the [UCSC Genome Browser](https://genome.ucsc.edu/) 
+so we will describe a bare-bone version here.
+
+[BED](https://genome.ucsc.edu/FAQ/FAQformat.html#format1) files are tab-separated
+text files. Every line corresponds to an interval or comment if it starts with `#`.
+No header lines are defined unless it is used to load data to a browser. The original 
+BED format specifies 12 columns; the first 3 mandatory and other 9 optional. 
+The first 6 columns are:
+
+1. **chromosome**
+2. **start**: inclusive
+3. **end**: exclusive
+4. **name**
+5. **score**: can be any number but for use in the browser it must be an integer in $[0, 1000]$ 
+6. **strand**
+
+Intervals in BED file are **0-based** and *semi-open* closed on the left and open
+on the right so `length = end - start`. For example, `chr1:0-100` corresponds to 
+the first 100 bases of chr1 (0-99). Missing data are specified with a dot ".".
+Sometimes the number of columns is included in the format specification so
+`BED6` means a BED file with only the first 6 columns. Typically BED files use 
+the `.bed` extension.
+
+### Interval Indexed Vectors
+
+To store interval indexed quantitative variables the following format are commonly used:
+
+<!-- bedGraph = sparce (COO) vector -->
+[bedGraph](https://genome.ucsc.edu/goldenPath/help/bedgraph.html) is the genomic
+interval equivalent of [coordinate format](https://scipy-lectures.org/advanced/scipy_sparse/coo_matrix.html)
+so a form of sparse vector (if we assume missing values are 0). The specification 
+is similar to a BED file but only uses 4 columns (but it is not `BED4`):
+
+1. chromosome
+2. start
+3. end
+4. score: any continuous-value
+
+bedGraph files usually are named with a `.bedgraph` or `.bg` extension.
+
+<!-- Wiggle ~ RLE format: good for regular data-->
+[Wiggle](https://genome.ucsc.edu/goldenPath/help/wiggle.html) format is a form of 
+running length encoding (RLE). It is a text-based, tab-delimited, line oriented
+format. Some lines specify the step size, variable or fixed, and some lines
+specify the data. If the data have enough regularity, Wiggle is more efficient
+than bedgraphs. Wiggle files typically use the `.wig` file extension.
+
+<!-- RLE -->
+[Running length encoding]((https://en.wikipedia.org/wiki/Run-length_encoding))
+are commonly used in genomics to loselessly compress data. The main idea is to
+compress runs of repeated values by storing only 1 element and the length of the
+run. The efficiency of compression depends on the length of the runs. It is most
+efficient if it can be combined with sorting. For example:
+
+```
+Sequence: AAATTTTCGCCCGGGG
+     RLE: 3A4T1C1G3C4G
+```
+
+<!-- bigWig -->
+Both bedGraph and Wiggle files can be compressed into bigWig files.
+The [bigWig](https://genome.ucsc.edu/goldenPath/help/bigWig.html) is a binary
+file format that allows fast random access to any region. 
+
+<!-- USCS Utilities to map between format --> 
+UCSC provides a set of utilities to transform data to and from these data files
+[here](http://hgdownload.soe.ucsc.edu/admin/exe/) and you can also access it on
+BigPurple with: `module add ucscutils`
+
+### R/Bioconductor
+
+In an integrated data analysis environment, genomic intervals are used to index
+a data-frame. In the R/Bioconductor ecosystem, intervals are represented by
+[GenomicRanges](https://doi.org/doi:10.18129/B9.bioc.GenomicRanges).
+
+![GRanges](figures/GRanges.png)
+
+
+<!-- Misc GRanges -->
+Besides indexing data-frames, GRange can also be used as index/coordinates to
+extract data from other "databases", like BAM files, Genomic Sequences, etc. 
+Inter-range operations (overlaps) are implemented in the 
+[GenomicAlignments](https://bioconductor.org/packages/GenomicAlignments/) package.
+
+### Command Line Tools
+
+The standard command line utility for manipulating bed files is 
+[bedtools](https://bedtools.readthedocs.io/). Besides genomic arithmetic (overlaps),
+bedtools can also use bed files as index to extract data from BAM or other binary files.
+Bedtools is designed to integrate well with unix-pipelines; ie it treats files by
+line and can read and write to `stdin`/`stdout`. See tutorial
+[here](https://sandbox.bio/tutorials?id=bedtools-intro) and also a "dictionary"
+between bedtools and Granges 
+[here](https://bioconductor.org/packages/release/bioc/html/HelloRanges.html).
+
+Although technically a Python library. [deeptools](https://deeptools.readthedocs.io)
+provides several command-line scripts to aggregate and visualize signal along intervals.
+
+### Python
+
+The Python equivalent of `GRanges` is [pyranges](https://pyranges.readthedocs.io/)
+which extends `pandas.DataFrame`s to be indexed by genomic intervals. It is still
+in Beta but actively maintained. 
+
+The main python packages for handling interval indexed files is 
+[deeptools](https://deeptools.readthedocs.io). Although deeptools provides a lot
+of utilities to be run from the command line, it does provide an 
+[API](https://deeptools.readthedocs.io/en/develop/content/api.html) which 
+interfaces with [numpy](https://numpy.org/) and thus can be integrated into the
+standard python data analysis ecosystem.
+
+## Features
+
+Besides indexing data structures, intervals are also used to annotate the genome.
+To locate genomic feature we have to specify their coordinates. Simple features
+can be specified with a single interval, for example binding sites or motifs.
+Some features however, including the most important one "gene", are more complex
+and require more intricate description.
+
+"What is a gene?" is a very loaded question that we are going to dodge. We are 
+going to focus on what "counts" as gene in bioinformatics, and what counts is
+what is listed in the major databases like [NCBI's](https://www.ncbi.nlm.nih.gov/gene/).
+The same answer applies to any other question of "what genomic feature X is?",
+namely it is defined by the relevant DB as a collection of genomic intervals.
+
+These databases usually define and store features using either the 
+[GFF3](https://github.com/The-Sequence-Ontology/Specifications/blob/master/gff3.md) 
+or the [GTF](http://mblab.wustl.edu/GTF22.html) formats. Both formats define genes
+as the root of a hierarchy of genomic intervals.
+
+For example, GFF3 defines a gene as a collection of *transcripts*, and possibly
+other related features like promoters and UTRs. Each transcript is a collection
+of introns, exons, and coding regions (CDS). The gene can be defined as the a 
+single interval covering all elements involved in it, but this definition is not
+useful if we want to calculate element specific overlaps like mRNAs. 
+
+![GFF3 Canonical Gene](https://raw.githubusercontent.com/The-Sequence-Ontology/Specifications/master/img/figure1.png)
+
+
+**"Fun" fact**: GFF3 coordinates are 1-based (unlike BED's 0-based)
+
+### Computational Tools
+
+Command line tools that need to be aware of genomic features, like gene expression
+quantifiers like [featureCounts](https://academic.oup.com/bioinformatics/article/30/7/923/232889)
+can deal directly with GFF3 or GTF formats.
+
+In the R/Bioconductor ecosystem, `GRangesList` are used to represent complex features
+like genes. `GRangesList` are list feature where each feature is defined as a
+collection of `GRanges`. Method defined for `GRanges` can be applied to the elements
+of the lists directly. Common operations for `GRangesList`s are shown below:
+
+![GRangesList Operations](figures/GRangeList_OP.png)
+
+In BioPython there is [no equivalent data structure](https://biopython.org/wiki/GFF_Parsing)
+but the [gffutils](https://daler.github.io/gffutils/) can be used to parse GFF files.
+
+## Annotated Data
+
+When performing data analysis with genomic data we often have to coordinate
+data in matrix format, like feature counts, with meta-data about the feature and
+samples stored as data.frames. For example, standard operations like `subset` 
+need to keep the different datasets aligned. To facilitate these cases, a novel
+datastructre of *annotated data* has been developed for bioinformatics applications.
+
+### SummarizedExperiment & co.
+
+In the R/Bioconductor environment, the standard package implementing this data 
+structure is the [SummarizedExperiment](https://bioconductor.org/packages/SummarizedExperiment/).
+Other packages extend its functionality to address application-specific needs like:
+
+- [SingleCellExperiment](https://bioconductor.org/packages/SingleCellExperiment/):
+  for single-cell experiments
+- [tidySummarizedExperiment](https://bioconductor.org/packages/tidySummarizedExperiment/):
+  to integrate it with the [tidyverse](https://www.tidyverse.org/)
+
+![SummarizedExperiment](figures/SummarizedExperiment.svg)
+
+### annData
+
+In the Python environment, the basic package implemented this data structure is
+[annData](https://anndata.readthedocs.io/), which was initially developed to 
+accommodate single-cell analysis but has since expanded to more general data
+analysis applications.
+
+![annData](figures/anndata_schema.svg)
+
+- `obs`/`var`: observation/variable meta-data (for subsetting/ordering)
+- `obsm`/`varm`: observation/variable matrices
+- `obsp`/`varp`: pairwise observation/varp data
+- `uns`: unstructured data
+
+### Storage
+
+Both R and Python have language-specific 
+[serialization](https://en.wikipedia.org/wiki/Serialization) formats 
+([RDS](https://rdrr.io/r/base/readRDS.html) for R and 
+[pickle](https://docs.python.org/library/pickle.html) for Python).
+
+[HDF5](https://www.hdfgroup.org/) is a language-independent format for storing 
+large data. "Internally", HDF5 resembles a filesystem with data acting as files
+and "groups" as directories. `annData`'s
+[default storage option is HDF5](https://anndata.readthedocs.io/en/latest/fileformat-prose.html).
+
+## Resources
+
+- Other formats:
+    + [bedpe](https://bedtools.readthedocs.io/en/latest/content/general-usage.html#bedpe-format):
+      connected intervals for paired-end reads (edges).
+    + [VCF](https://pubmed.ncbi.nlm.nih.gov/21653522/): to store sequence variants
+- Other tools:
+    + [IGV](https://software.broadinstitute.org/software/igv/home): visualize tracks
+    + [multiqc](https://multiqc.info/): combines QC reports across multiple samples. 
+      Not just limited to fastq.
+    + [scikit-bio](http://scikit-bio.org/): currently in Beta, sequence focused
+- Other:
+    + [NCBI file format](https://www.ncbi.nlm.nih.gov/sra/docs/submitformats/)
+    + [Bioconductor Annotation Naming Conventions](https://genomicsclass.github.io/book/pages/annoCheat.html)
+    + [Long Read Tools](https://long-read-tools.org) from
+      [Opportunities and challenges in long-read sequencing data analysis](https://doi.org/10.1186/s13059-020-1935-5)
+    + [FastQC examples](https://rtsf.natsci.msu.edu/sites/_rtsf/assets/File/FastQC_TutorialAndFAQ_080717.pdf)
+    + [Bioinformatic Pipelines](https://nf-co.re/pipelines)
+- Online Courses
+    + [Galaxy Training Material](https://training.galaxyproject.org/training-material/)
+    + [Bioconductor Course Material](https://bioconductor.org/help/course-materials/)
+    + [Rockefeller Bioinformatics](https://rockefelleruniversity.github.io/)
+    + [Biomedical Data Science](https://genomicsclass.github.io/book/)
+    + [BioPython Resources](https://biopython.org/wiki/Documentation)
+    + [Bioinformatics Tutorials (1)](https://sandbox.bio/)
+    + [Bioinformatics Tutorials (2)](https://rosalind.info/)
+    + [Bioconductor Course](https://kasperdanielhansen.github.io/genbioconductor/)
+    + [Computational Genomics with R](https://compgenomr.github.io/book/)
+- Papers
+    + [Software for Computing and Annotating Genomic Ranges](https://doi.org/10.1371/journal.pcbi.1003118)
+      Biocundoctor paper
+    + [A Quick Guide for Developing Effective Bioinformatics Programming Skills](https://doi.org/10.1371/journal.pcbi.1000589) a bit old but maybe useful?
+    + [Ten simple rules for biologists learning to program](https://doi.org/10.1371/journal.pcbi.1005871)
+
