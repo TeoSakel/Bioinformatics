@@ -1,0 +1,1645 @@
+---
+title: "Statistics Crash Course"
+author: "Teo Sakel"
+format: 
+  html:
+    toc: true
+    code-fold: true
+    warning: false
+    reference-location: margin
+    citation-location: margin
+---
+
+```{r libraries}
+suppressPackageStartupMessages({
+    library(matrixStats)
+    library(ggplot2)
+    library(ggside)
+})
+
+set.seed(1234567890L)  # for reproducibility
+```
+
+## Goals
+
+In this session, we will do a quick introduction to some key ideas of probability 
+theory and statistical learning. The subject is extremely vast and deep so there
+is no hope of doing it any justice here. Instead, our goal is to present the main 
+concepts and lay the ground work so that when we delve deeper into some of these
+ideas for some bioinformatics application you should have at least a working
+understanding of what we are doing and what are the challenges we are facing.
+
+If you are familiar with some or all of these ideas this is a good opportunity to
+refresh your memory and/or ask questions. If you are not familiar with most or any
+of these ideas, then your goal should be to develop a functional understanding 
+so that you can use them as tools in the future just as you would use any other
+function/object in programming.
+
+## Introduction
+
+> Natural numbers were created by God, everything else is the work of men.
+>
+> --- Leopold Kronecker
+
+The most common output of a sequencing experiment is a  **count matrix** $K_{ij}$
+where $i$ enumerates the feature of interest (genes for RNA-seq, fragments for
+ChIP, fix-width bins for HiC etc) and $j$ enumerates the samples measured.
+Downstream analysis aims to characterize this matrix and find differences,
+usually, between the samples.
+
+In practice, we cannot simulate the process that generated the count matrix (if
+we could we wouldn't have run the experiment in the first place) so we settle
+for the next best thing which is a process that has *the same statistical properties* 
+as the physical one. In particular, our goal is to describe a model that can
+generate *random counts* and then tweak its parameters in order make the random
+matrices "look like" the one we have observed. Under this framework, *differences* 
+between samples means that their counts were drawn from different generative
+models and thus have different statistical properties.
+
+![Probability Model](figures/Probability_Model.png)
+
+**Summary**: Experiments are modeled as data generating processes that we want to 
+characterize. These processes are not mechanistic, were variables have "real"
+counterparts, but probabilistic, ie they resemble the physical processes only in
+their statistical properties.
+
+## Generative models
+
+> Lies, damned lies, and statistics
+
+Generative models are probability distributions together with: a mechanism/process 
+to generate samples from them and a set of parameters that allows them to change 
+the sample properties to account for changes in some of the underlying "causes".
+
+::: {.column-margin}
+Generative models are usually contrasted with *discriminative models*. In 
+statistical lingo, generative models try to describe the join probability of
+variables (X) and outcomes (Y) $P(X, Y)$, while descriminative models focus on
+the marginal probability $P(Y \mid X)$. A classic read about the difference
+[here](http://www2.math.uu.se/~thulin/mm/breiman.pdf)
+:::
+
+Simplifying whole textbooks into few sentences, a probability distribution
+$P_{\theta}(x)$ is simply a family of functions that depend on some parameters
+$\theta$ which given an "outcome" $x$ outputs a real number in the $[0, 1]$. 
+$x$ and $\theta$ can be multidimensional. This mapping have to respect some
+rules, like the sum over all atomic events should add up to 1, but we are going
+to deal with them in a "need to know" basis.
+
+$$P_{\theta}: x \rightarrow [0, 1]$$
+
+Some times we will use the notation $P(x \mid \theta)$ which reads as "probability
+of $x$ given $\theta$".
+
+What this number *means* is debatable. It can be interpreted as the frequency of
+observing $x$ after many draws from $P_{\theta}$. That's the *Frequentist* point
+of view. Alternatively, it can be thought of as a degree of belief that
+$P_{\theta}$ will produce $x$. That's the *Bayesian* point of view. The
+differences are not important here but will become later on when we talk about
+*inference*.
+
+Drawing samples from a distribution is another interesting problem that we are not
+going to study in detail here. Suffice to know that for "simple" probability distributions
+there are efficient methods to generate samples and all high-level languages implement
+them. For more complicated probability distributions, there are generic techniques 
+that allow us to build up sampling schemes but the computational cost of generating
+a samples may increase substantially.
+
+So programmatically, to specify a generative `model` that depends on a list of
+parameters `theta` we need to define two functions^[depending on the application]:
+
+-   `dmodel(x, theta)`: that given an value `x` and parameters `theta`
+    outputs a number between 0 and 1
+-   `rmodel(n, theta)`: that given parameters `theta` produces `n`
+    random samples from the model^[not strictly necessary but good to have]
+
+Here we use the traditional `R` notation where probability functions are named
+as `d<name>`, where `d` stands for *density*, while sampling is done using the 
+`r<name>` function, where `r` stands for *random* (I guess). In `Python`, there 
+are many  packages that define probability distributions so the notation is not 
+as consistent. The most generic library of such functions is 
+[scipy.stats](https://docs.scipy.org/doc/scipy/reference/stats.html). 
+Below is a "dictionary" table for the standard probability function :
+
+|     Symbolic       |    `R`    | `scipy.stats` |
+|--------------------|-----------|---------------|
+| $f(x)=P(X=x)$      | `d<name>` | `<name>.pdf`  |
+| $F(x)=P(X \le x)$  | `p<name>` | `<name>.cdf`  |
+| $F^{-1}(p)$        | `q<name>` | `<name>.ppf`  |
+| $x \sim P(\theta)$ | `r<name>` | `<name>.rvs`  | 
+
+Notes:
+- $X$ is a random variable, while $x$ is the (known) input
+- For discrete variables (like counts) `scipy.stats` uses `<name>.pmf` 
+  stand for "mass" instead of density function.
+- If you want more exotic distributions in R see
+  [here](https://cran.r-project.org/web/views/Distributions.html)
+
+Below is a visual representation of such a model using the Normal (Gaussian)
+distribution (no need to dwell on it if you are not familiar with these
+concepts):
+
+```{r gaussian_model_simple}
+clip_data <- function(x, thres = 3) x[abs(x) < thres]
+
+h_arrows <- function(y0, x0, x1, col, ...) 
+    arrows(x0, y0, x1, y0, col = col, code = 2L, lwd = 1.5, length = .1)
+
+v_arrows <- function(x0, y0, y1, col, ...) 
+    arrows(x0, y0, x0, y1 - .01, col = col, code = 2L, lwd = 1.5, length = .1)
+
+old <- par(mar=c(5,4,2,6))
+curve(dnorm, from = -3, to = 3, n = 201, lwd = 2,
+      main = "Gaussian Probability Model",
+      xlab = "X", ylab = "P(x)", frame.plot = FALSE)
+rug(clip_data(rnorm(100)), col = 2L)
+points(c(0, -1), c(dnorm(0), dnorm(-1)), col = c(2, 3), pch = 19L)
+v_arrows(x0 = -1, y0 = 0, y1 = dnorm(-1), col = 3L)
+h_arrows(x0 = -1, x1 = -3.1, y0 = dnorm(-1), col = 3L)
+arrows(x0 = rep(0, 3L),  y0 = rep(dnorm(0), 3L), 
+       x1 = c(-1, 0, 1) * .5, y1 = rep(0, 3L), 
+       col = 2L, length = .1, lwd = 1)
+
+legend("topleft", legend = c("PDF", "rnorm", "dnorm"),
+       lwd = c(2, 1, 1.5), lty = 1L, col = 1:3,
+       inset=c(1, 0), xpd=TRUE, bty="n")
+```
+
+And a more detailed description in case you are morbidly curious:
+
+```{r gaussian_model_full}
+clip_data <- function(x, thres = 3) x[abs(x) < thres]
+v_arrows <- function(x0, y0, y1, col, ...) 
+    arrows(x0, y0, x0, y1 - .02, col = col, code = 2L, lwd = 1.5, length = .1)
+h_arrows <- function(y0, x0, x1, col, ...) 
+    arrows(x0, y0, x1, y0, col = col, code = 2L, lwd = 1.5, length = .1)
+
+old <- par(mar=c(5,4,2,6))
+curve(pnorm, from = -3, to = 3, n = 201, lwd = 2,
+      main = "Gaussian Probability Model",
+      xlab = "X", ylab = "P(x)", frame.plot = FALSE)
+curve(dnorm, from = -3, to = 3, n = 201, lwd = 2, lty = 2, add = TRUE)
+rug(clip_data(rnorm(100)), col = 2L)
+points(c(0, -1, 1, 2), c(dnorm(0), dnorm(-1), pnorm(1), pnorm(2)), 
+       col = 2:5, pch = 19L)
+
+v_arrows(x0 = -1, y0 = 0, y1 = dnorm(-1), col = 3L)
+v_arrows(x0 = 1,  y0 = 0, y1 = pnorm(1),  col = 4L)
+v_arrows(x0 = 2,  y1 = 0, y0 = pnorm(2),  col = 5L)
+arrows(x0 = rep(0, 3L),  y0 = rep(dnorm(0), 3L), 
+       x1 = c(-1, 0, 1) * .5, y1 = rep(0, 3L), 
+       col = 2L, length = .1, lwd = 1)
+
+h_arrows(x0 = -1, x1 = -3.1, y0 = dnorm(-1), col = 3L)
+h_arrows(x0 = 1,  x1 = -3.1, y0 = pnorm(1),  col = 4L)
+h_arrows(x0 = -3.1,  x1 = 2-0.1, y0 = pnorm(2),  col = 5L)
+
+legend("topleft", legend = c("CDF", "PDF", "rnorm", "dnorm", "pnorm", "qnorm"),
+       lwd = c(2, 2, 1, 1.5, 1.5, 1.5), lty = c(1L, 2L, rep(1L, 4L)), 
+       col = c(1L, 1L, 2:5), inset=c(1, 0), xpd=TRUE, bty="n")
+```
+
+**Summary**: Generative models are families of function that map data (events) to
+probabilities and back. These functions also involve other arguments that we call 
+parameters.
+
+### Simple Example
+
+> A penny for your thoughts
+
+![Coin Model](figures/Coin Model.svg){height="500"}
+
+For example, to model the outcome of tossing a coin (a probability text starting
+from tossing coins, what a shocker!) we can use:
+
+- A single parameter ($\theta$) to specify the probability of heads (and by 
+  necessity the probability of tails, which would be $1-\theta$).
+- Sampling can be produced by drawing a random number in the $[0, 1]$ interval 
+  (eg using a uniform distribution `runif`) and then labeling the outcome as 
+  "heads" if the number is less that $\theta$ and tails otherwise.
+
+This model does not simulate the physics of tossing a coin, which is
+[chaotic](http://www.jstor.org/stable/20453950), ^[In theory there is nothing
+random about the outcome of tossing a coin. This model just captures our
+belief/uncertainty of the outcome, Bayesian view, or the long-term behavior of
+the die, Frequentist view.] but instead has the same statistical properties,
+namely probabilities of landing heads or tails, as the physical process. Below
+is the code implementing this generative model.
+
+```{r coin_model}
+#| code-fold: show
+dcoin <- function(x, theta = 0.5) {
+    # x: observed outcomes, a series of 0s (tails) and 1s (heads)
+    # theta: probability of 1 (heads)
+    stopifnot(theta >= 0 && theta <= 1)
+    p <- ifelse(x == 1, theta, 1 - theta)
+    p[x != 0 & x != 1] <- 0  # other values of x are not possible
+    return(p)
+}
+
+rcoin <- function(n, theta = 0.5) {
+    # n: number of tosses
+    # theta: probability of 1 (heads)
+    stopifnot(theta >= 0 && theta <= 1)
+    x <- runif(n)
+    ifelse(x < theta, 1L, 0L)
+}
+
+# Example of 20 random draws
+theta_star <- 0.6
+N_draws <- 20L
+coin_run <- rcoin(N_draws, theta = theta_star)
+outcome_prob <- table(coin_run) / N_draws  # summary statistic
+names(outcome_prob) <- c("Tails", "Heads")
+barplot(outcome_prob, lwd = 2, 
+        xlab = paste(c("Run: ", ifelse(coin_run == 0, "T", "H")), collapse = ""),
+        ylab = "Probability", ylim = c(0, max(c(outcome_prob, theta_star))),
+        main = "Model of Coin Toss")
+abline(h = theta_star, lty = 2, lwd = 2, col = "darkorange")
+```
+
+A model that can produce "realistic" random data for some values of its
+parameters is a good indication that we have captured the statistical properties
+of the physical process. There is no objective metric of a model's quality, as
+Box famously said "All models are wrong some are useful". The usefulness/quality
+of the model depends on the application and what other options are available as well
+as the taste of the researcher. 
+
+## Likelihood
+
+Once we are satisfied with our model, we may want to "run it in reverse", ie using
+observed data *infer* the *likely* values of $\theta$ that generated them. This
+process is called **inference**. When performing inference, we are using the
+same models we used to assign probabilities to the data only this time we treat
+the data as given and the parameters $\theta$ as unknown. To distinguish 
+between the two uses of the same formula we call it *density* function when used
+to assign probabilities ($P(X \mid \theta)$) to data and **likelihood** when used 
+to infer the $\theta$ ($L(\theta \mid x) = P(\theta, X=x)$). The "bar" notation 
+$P(X \mid \theta)$ is used to denote conditional probabilities where the variables 
+right of the bar are treated as "known"/fixed quantities.
+
+Running the process in reverse brings us against a hidden assumption of the model
+so far, namely how are we suppose to combine multiple data-points to infer $\theta$.
+A sequence of data-points, coin tosses in our example, may have some correlation 
+structure we need to take into account, eg the probability of heads drops if we
+observe a lot of tails in a row 
+(aka [gambler's fallacy](https://en.wikipedia.org/wiki/Gambler%27s_fallacy)). 
+
+A common assumption (and the one we implicitly adopted) is that data-points are 
+*independent & identically distributed* (*iid*) **given** $\theta$. Two random 
+variable are independent if $P(X_1, X_2) = P(X_1) P(X_2)$ thus the assumption we 
+have been operating under is that:
+
+$$P(\{x_1, \dots, x_n \} \mid \theta) = \prod_{i=1}^n P ( x_i \mid \theta) $$
+
+Finally, it is important to note that the likelihood function is **not** the 
+probability distribution of $\theta$. It tells us how likely is a sequence of data
+to arise given $\theta$ and as such it quantifies the agreement of the data with
+the parameter. Thus, although its values are equal to those the probability function 
+of the data, we use use the notation $L(\theta \mid X)$ to distinguish them. 
+Whether or not $\theta$ even admits a probability distribution is philosophically
+debatable (see Bayesian vs Frequentist distinction later).
+
+```{r gaussian_likelihood_vs_density}
+#| results: "hold"
+#| fig-cap: Gaussian Likelihood vs Density
+
+reds9 <- RColorBrewer::brewer.pal(9, "Reds")
+par(mfrow = c(1, 2), mar = c(5.1 , 4.1, 2.1, 1.1))
+x <- seq(-3, 3, length.out = 201)
+# M <- seq(0.5, 1.5, by = .25)
+M <- 2^seq(-1, 1, length.out = 6)
+plot(x, dnorm(x, 0, s = M[1]), type = "n", frame.plot = FALSE,
+     xlab = "X", ylab = "P(x | σ)",
+     sub = expression(mu == 0))
+for (i in seq_along(M)) 
+    lines(x, dnorm(x, 0, M[i]), col = reds9[i + 3])
+points(rep(0, length(M)), dnorm(0, 0, M), col = reds9[3 + 1:length(M)], pch = 16)
+legend("topright", legend = sprintf("%.2f", M), title = "σ", 
+       col = reds9[3 + 1:length(M)], lwd = 1, bty = "n")
+
+x <- 2^seq(-2, 2, length.out = 201)
+plot(x, dnorm(0, 0, x), type = "l", col = 1L, lwd = 1.5, 
+     frame.plot = FALSE, ylim = c(0, .8), xlim = c(.5, 4),
+     xlab = "σ", ylab = "L(σ | x)", 
+     sub = expression(mu == 0))
+points(M, dnorm(0, 0, M), col = reds9[3 + 1:length(M)], pch = 16)
+
+mtext("Gaussian Likelihood of σ", side = 3, line = -1, 
+      outer = TRUE, font = 2L, cex = 1.25)
+```
+
+So, returning to our coin example, if we want to estimate the likelihood of 
+the given coin run for every $\theta$.
+
+```{r coin_likelihood}
+#| code-fold: show
+Lcoin <- function(theta, run) prod(dcoin(run, theta)) 
+
+step <- 0.005
+theta <- seq(0, 1, by = step)  # possible values of theta
+theta_lik <- sapply(theta, Lcoin, run = coin_run)
+mle_idx <- which.max(theta_lik)  # point(s) with highest likelihood
+
+# Plotting 
+plot(theta, theta_lik, type = "l",
+     main = expression(paste("Likelihood of ", theta)),
+     sub = paste(c("Run: ", ifelse(coin_run == 0, "T", "H")), collapse = ""),
+     ylab = expression(paste(italic(L), "(", theta, "|x)")),
+     xlab = expression(theta))
+points(theta[mle_idx], theta_lik[mle_idx], col = "firebrick", pch=16)
+abline(v = theta_star, lty = 2, lwd = 2, col = "darkorange")
+legend("topleft", 
+       legend = c(expression(paste("true ", theta)), 
+                  expression(paste("max ", theta))), 
+       pch = c(NA, 16), lty = c(2, 0), lwd = 2,
+       col = c("darkorange", "firebrick"))
+text(x = 0, y = theta_lik[mle_idx]*2/3, adj = 0,
+     sprintf("AUC = %.2g", sum(theta_lik)*step))
+```
+
+::: {.column-margin}
+The likelihood for a 20-toss run is tiny as the numbers in the y-axis suggest.
+There are $2^{20}$ such runs so matter how we spread the total probability mass
+most runs would have a small probability of occurring.
+:::
+
+In the previous example, we estimated the likelihood from a single run but when
+it comes to estimating the value of $\theta$ then obviously the order of heads and
+tails is not important, only their counts matters (we assume $\theta$ stays the
+same across the run). So if we expand the likelihood function and collect all the
+terms with the same number of heads ($H = \sum_i x_i$) we get the following:
+
+$$
+P(\{x_1, \dots, x_n \} \mid \theta) = 
+P(H, N \mid \theta) = \binom{N}{H} \theta^H (1-\theta)^{N-H}
+$$
+
+We call $H$ and $N$ **sufficient statistics** because they are enough to compute
+likelihood, ie the likelihood cannot tell apart runs that have the same $N$ and $H$.
+In the formula given, $\binom{N}{H}$ counts the number of runs of length $N$
+with $H$ heads and acts as a normalizing factor (so that the the probability of 
+all the runs add up to 1: $\sum_{H=0}^N P(H, N\mid \theta)=1$).^[That is why a 
+run of all heads (assuming $\theta \gt 0.5$) is the most likely run but it is not
+"typical" with respect to $\theta$ because its "base of support" is small]
+
+Below we show the list of all possible runs together with their individual 
+probabilities and the probability of the corresponding $\theta$
+
+```{r coin_run_space}
+#| fig-height: 6
+#| fig-width: 3
+N <- 5L
+all_runs <- lapply(0:(2^N-1), intToBits) |>  
+    lapply(as.integer) |>  
+    lapply("[", 1:N)
+all_runs <- do.call(rbind, all_runs)
+all_runs <- all_runs[order(rowSums(all_runs)), ]
+rownames(all_runs) <- sprintf("R%02d",  0:(2^N-1))
+N1 <- rowSums(all_runs)
+pheatmap::pheatmap(all_runs, color = c("white", "black"),
+                   cluster_rows = FALSE, cluster_cols = FALSE, legend = FALSE,
+                   cellwidth = 12, cellheight = 12,  fontsize = 12,
+                   display_numbers = TRUE, number_format = "%d", number_color = "red2",
+                   main = sprintf("All Runs of length %d\nP(1)=%g", N, theta_star), 
+                   show_rownames = FALSE,  annotation_names_row = FALSE,
+                   annotation_row = data.frame(Lrun = apply(all_runs, 1L, Lcoin, theta = theta_star),
+                                               `Lθ` = dbinom(N1, N, prob = theta_star)),
+                   annotation_colors = list(Lrun =  RColorBrewer::brewer.pal(N+1, "Reds"),
+                                            `Lθ` = RColorBrewer::brewer.pal(N + 1, "Blues")),
+                   gaps_row = which(diff(N1) > 0))
+```
+
+And below is the likelihood of $\theta$ given the original run if we take into
+account the number of ways we could have achieved the same value of $\theta$.
+
+```{r coin_likelihood_stats}
+#| code-fold: show
+Lcoin <- function(theta, run) { 
+    # sufficient stats
+    sstats <- c(H = sum(run), N = length(run))
+    # likelihood never "sees" run
+    dbinom(sstats["H"], sstats["N"], theta)
+} 
+
+theta_lik <- Lcoin(theta, coin_run)
+mle_idx <- which.max(theta_lik)  # point(s) with highest likelihood
+
+# Plotting 
+plot(theta, theta_lik, type = "l",
+     main = "Likelihood of θ", ylab = "L(θ|x)", xlab = "θ",
+     sub  = sprintf("Given %d coin tosses and %d heads", N_draws, sum(coin_run)))
+points(theta[mle_idx], theta_lik[mle_idx], col = "firebrick", pch=16)
+abline(v = 0.5, lty = 2, lwd = 2, col = "darkorange")
+legend("topleft", 
+       legend = c("true θ", "max θ"), 
+       pch = c(NA, 16), lty = c(2, 0), lwd = 2,
+       col = c("darkorange", "firebrick"))
+text(x = 0, y = theta_lik[mle_idx]*2/3, adj = 0,
+     sprintf("AUC = %.2g", sum(theta_lik)*step))
+```
+
+::: {.column-margin}
+Notice how the likelihood now has the same form as before but the values are
+much bigger because it collapses all the runs with the same number of heads `r sum(coin_run)`.
+:::
+
+Finally, since the likelihood is not treated as a probability distribution, we
+often drop the normalizing constants involved which are hard to calculate most
+of the times. As you can see from the coin example, this does not affect the
+form of the likelihood function since the normalizing constant does not depend
+on $\theta$. In these cases, we just require that the likelihood to be 
+*proportional* to the data density. Proportionality is sufficient for selecting
+values of $\theta$ but not when we want to compare different probability models 
+($P$):
+
+$$L(\theta \mid x) \propto \prod_i P(x_i \mid \theta)$$
+
+Below is an example of how the likelihood of $\theta$ and the probability $x$ 
+change (or not) as we observe 100 tosses of a coin:
+
+```{r likelihood vs density}
+#| eval: true
+#| layout-nrow: 1
+#| column: body-outset
+#| fig-cap: [Likelihood, Probability]
+
+N <- 100L
+theta_star <- 0.6  # = H/N
+DF <- expand.grid(H = 0:N, N = 1:N)  # all combination of N & H
+DF <- subset(DF, N >= H)  # you cannot have more heads than tosses
+
+# Observation
+obs <- data.frame(N = 1:N, x = cumsum(rcoin(N, theta_star)))  # the observed run
+DF <- merge(DF, obs, by = "N")   # add 'x' to DF
+
+# Probability
+DF$dens <- with(DF, dbinom(H, N, 0.5))  # P(x | θ = 0.5)
+DF$dens <- unlist(by(DF, DF$N, function(df) df$dens/max(df$dens)))  # scale by N
+
+# Likelihood
+DF$lik <- with(DF, dbinom(H, N, x/N))  # Likelihood L(θ | x, N) 
+DF$lik <- unlist(by(DF, DF$N, function(df) df$lik/max(df$lik))) # scale by N
+
+ggplot(DF, aes(N, H/N)) +
+    geom_tile(aes(fill = lik), height = 1/N, width = 1, color = "gray") +
+    geom_line(aes(N, x/N), data = obs, size = 2, alpha = .5) +
+    scale_fill_viridis_c(option = "D", direction = -1) +
+    labs(x = "# Trials", y = "Probability of Success", 
+         title = expression("L"~(theta ~ "|" ~ X == bar(x))), 
+         fill = expression(L/L[max])) +
+    coord_fixed(ratio = N) +
+    theme_classic() 
+
+ggplot(DF, aes(N, H/N)) +
+    geom_tile(aes(fill = dens), height = 1/N, width = 1, color = "gray") +
+    geom_line(aes(N, x/N), data = obs, size = 2, alpha = .5) +
+    scale_fill_viridis_c(option = "D", direction = -1) +
+    labs(x = "# Trials", y = "Probability of Success", 
+         title = expression(P(X ~ "|" ~ theta == 0.5)),
+         fill = expression(p/p[max])) +
+    coord_fixed(ratio = N) +
+    theme_classic() 
+```
+
+**Summary**: The same model used to assign probability to events can be used to
+assign likelihood to the parameters of the model. The only difference is what we
+treat as known or not. This is the first step for running the model in "reverse".
+
+## Inference
+
+> The past only exists insofar as it is present in the records of today.
+And what those records are is determined by what questions we ask.
+There is no other history than that.
+>
+> --- Wheeler, 1982:24
+
+In science and engineering, we rarely care about the observed data. We usually
+care about unobserved events, eg future toss outcomes, or unobservable parameters, 
+eg the probability of a coin to come up heads. To infer the value of unobservable
+parameters we use the likelihood function. There are different ways we can utilize
+the likelihood to extract information from the data. The 2 main approaches are:
+
+1. **Bayesian**: uncertainty about $\theta$ can be expressed as a (prior) probability
+   distribution which the likelihood of the observed data update via Bayes Theorem.
+2. **Frequentist**: uncertainty arises from the fact that we are dealing with finite 
+   samples while $\theta$ is only defined at the limit of infinity. This uncertainty
+   gives rise to the sampling distribution which describe how finite samples behave.
+
+[Bayesian approaches try to average (integrate) the likelihood function, while 
+Frequentists try to find its maxima.]{.aside}
+
+The 2 approaches differ philosophically but in practice the result often agree
+especially if the size of the data is large and the model is well specified (so
+not so often). Bayesian approaches are more versatile and can construct more 
+complex models but inference is costly compared to frequentist methods.^[Again 
+we are simplifying massively...] In reality, the 2 approaches occupy the two 
+extremes of a spectrum of methodologies where hybrid method tries to mix the 
+benefits and avoid the shortcomings of both. In practice, the choice of 
+appropriate method is a matter of application and taste.
+
+A note on notation before we proceed. We are going to denote our estimates of an
+unknown quantity with a "hat" like so $\hat{\theta}$. If there is a "null" value,
+ie a value that we consider uninteresting, we are going to denote it with 0 like 
+$\theta_0$. Finally, if there is a true/target value of a parameter that we are
+trying to predict we are going to denote it with a star like $\theta_{\star}$.
+This notation is fairly common.
+
+### Frequentist Inference
+
+An intuitive guess for the value of a parameter $\theta$ is that which maximizes
+the likelihood (probability) of the observed data to materialize ("max θ" in our
+coin example). This estimate of $\theta$ is (unimaginatively) called the
+*Maximum Likelihood Estimate* or **MLE**. Obviously this single-point estimate is
+extremely biased towards the observed data and as we saw from the simple coin
+example, there is no guarantee that it will coincide with the value that was used 
+to generate the data. That is because there is *sampling variance* (variance =
+noise) in our data. In particular, we only observed a "small" finite sample of
+coin tosses, if we were to repeat the experiment the value of MLE would probably 
+change. Below we plot the sampling distribution of the probability of heads
+
+```{r sampling_distribution}
+#| code-fold: show
+Nrep <- 5000L  # Number of experiments
+N <- 20L  # Number of coin tosses
+theta_star <- 0.6  # "true" prob of heads
+
+H <- replicate(Nrep, sum(rcoin(N, theta = theta_star)), simplify = TRUE)
+
+H <- data.frame(
+    mle = 0:N / N,
+    P = sapply(0:N, function(x) mean(H == x))
+)
+
+plot(P ~ mle, data = H, type = "b", frame.plot = FALSE,
+     main = expression(paste("Sampling Distribution of ", hat(theta))),
+     sub = sprintf("N = %d", N),
+     xlab = expression(hat(theta)), ylab = expression(P(theta)))
+abline(v = theta_star, lty = 2, lwd = 2, col = "darkorange")
+legend("topleft", expression(theta["*"]), col = "darkorange",
+       lty = 2, lwd = 2, bty = "n")
+```
+
+We observe that the distribution is centered around the true value of $\theta_{\star}$
+which indicates that the MLE is an *unbiased* estimator of it. However, we also
+observe that the distribution has some variance. The goal of frequentist inference
+it to estimate this variance and use it to construct confidence intervals (CI) 
+around it the observed value from MLE.
+
+In practice, we only have access to 1 sample and no other access to the sampling
+distribution. We have to compensate for this lack of information by resorting to
+theoretical guarantees. The key insight is to take the logarithm of the likelihood 
+function which turns the product into sum and then utilize the Central Limit Theorem
+(CLT). CLT states that when iid random variables are summed up, their sum (which 
+is a random variable) is normally distributed. Since, $\log P (x \mid \theta)$ 
+is a random variable, because each data point is a "random" sample the CLT applies.
+
+$$
+\ell(\theta \mid \pmb{x}) = \log L(\theta \mid \pmb{x}) = \sum_i \log P ( x_i \mid \theta) 
+$$
+
+The parameters of the limiting normal distribution can be approximated by information
+around the MLE, so we do not have to know the whole log-likelihood function just
+its values up to the 2nd derivative around its maximum. 
+
+```{r MLE_curvature}
+x <- seq(-3, 3, length.out = 201)
+plot(x, dlogis(x), type = 'l', lwd = 1, frame.plot = FALSE,
+     xlab = "θ", ylab = "Likelihood", main = "Standard Logistic Distribution")
+
+points(0, dlogis(0), pch = 19, col = "firebrick")  # MLE
+
+d2logis <- function(x) (cosh(x) - 2) / 8 / cosh(x/2)^4   # 2nd derivative of logistic
+R <- -1/d2logis(0)  # Radius from curvature
+x <- pi * seq(-1, 1, length.out = 201) / 2
+lines(R*sin(x), cos(x)*R - R + dlogis(0), lty = 2, col = "firebrick")
+
+legend("topright", bty = "n", legend = c("MLE", "Curvature"),
+       pch = c(19, NA), lty = c(NA, 2), col = "firebrick")
+```
+
+
+There are clearly more steps required to get the final CI, such as transforming
+the likelihoods to parameters, and we glossed over many details but these do not
+affect the big picture presented here. Finally, this is clearly an **asymptotic** 
+theory since the CLT only applies in the limit of $N \to \infty$, so we have to
+make further assumptions that our sample is large enough to be in this regime.
+However, there are refinements of the theory that allow us to deal with smaller
+samples and other edge cases.
+
+```{r likelihood_quadratic_approx}
+p <- 0.8  # Observed MLE
+theta <- seq(0.5, 1, length.out = 101L)
+
+# Fisher Information of Binomial
+Ibinom <- function(mle, N) N / mle / (1-mle)
+
+Lbinom <- function(theta, N, mle) {
+    x <- round(N * mle)
+    L <- dbinom(x, N, theta, log = TRUE)
+    L - max(L)
+}
+
+Lbinom_approx <- function(theta, N, mle) {
+    # Taylor quadratic approximation of Likelihood at MLE
+    x <- round(N * mle)
+    Lmax <- dbinom(x, N, mle, log = TRUE)  # mle not theta
+    # first derivative = 0 because we are at an extremum
+    FI <- Ibinom(mle, N)  # Fisher Info = 2nd derivative
+    L <- Lmax - 0.5 * FI * (theta - mle)^2
+    L - max(L)
+}
+
+DF <- data.frame(
+    N = rep(c(10L, 100L), each = 101L),
+    theta = rep(theta, 2L),
+    Exact = c(Lbinom(theta, 10L, p), Lbinom(theta, 100L, p)),
+    Approx = c(Lbinom_approx(theta, 10L, p), Lbinom_approx(theta, 100L, p))
+)
+
+DF <- reshape(DF, direction = "long", varying = c("Exact", "Approx"),
+              v.names = "Likelihood", times = c("Exact", "Approx"))
+
+ggplot(DF, aes(theta, Likelihood)) + 
+    geom_line(aes(color = time)) +
+    facet_wrap(~ N, labeller = label_both) +
+    ylim(-5, 0) +
+    scale_color_manual(values = c("Approx" = "firebrick", "Exact" = "black")) +
+    labs(x = expression(theta), y = "log-likelihood", color = "Method") +
+    theme_bw()
+```
+
+### Bayesian Inference
+
+From a Bayesian point of view, the situation is conceptually simpler. Unfortunately,
+this conceptual simplicity does not always translate to computational simplicity.
+Bayesian inference is based on the celebrated 
+[Bayes Theorem](https://www.nature.com/articles/nmeth.3335) which in our context
+is written as:
+
+$$
+P(\theta \mid x) = \frac{L(x \mid \theta) P(\theta)}{P(x)}
+$$
+
+where:
+
+- $L(x \mid \theta)$ is the likelihood of the data.
+- $P(\theta)$ is the prior probability of $\theta$
+- $P(x)$ is marginal probability of the data $\sum_{\theta} L(\theta \mid x) P(\theta)$
+
+The likelihood of the data plays a similar role as in the frequentist case, it
+quantifies the agreement of the parameter $\theta$ with the observed data $x$. 
+Functionally, it has the form of the "conditional probability of data given 
+$\theta$", but in the Bayesian framework, the data are known so they do not really 
+admit a probability distribution so we keep the special notation.^[if we treat 
+the likelihood as conditional probability of data, then Bayes Theorem reduces to 
+a simple identity practically]
+
+The prior probability $P(\theta)$ is historically the most controversial part of
+this framework. It is canonically meant to quantify our belief about the
+possible values of $\theta$ before we observe the data. Functionally, the prior
+probability acts as a weight function for the likelihood. For example, in
+extreme cases, a value of $P(\theta) = 0$ means that $\theta$ is a-priori
+impossible regardless of the supporting evidence, while $P(\theta) = 1$ means
+that the value of $\theta$ is known and no amount of evidence can convince us
+otherwise. For all other values, there is some amount of evidence, encoding in
+the likelihood that can force us to change our prior beliefs to any posterior
+(except the extremes 1, 0).
+
+Although the subjectivity of the prior has been a hotly debated issue, in practice 
+it is not so consequential for multiple reasons:
+
+- A strong likelihood (lots of data) can overpower it.
+- In case of a weak likelihood (few data) a prior is more of a feature than a bug.
+  It is not wise to base decisions on few data points without strong priors.
+- There are a lot of priors to choose from and some of them are more "objective"
+  than other (which practically means that objective techniques are priors in disguise)
+- Choosing priors is not simply a matter of preference, but can be based on decision
+  theory or computational constraints.
+- Finally, there are more important differences between Bayesian and frequentist
+  approaches that merit more consideration.
+
+The marginal probability $P(x)$ quantifies the probability of observing data $x$
+across all possible values of $\theta$. As such it is a holistic metric of the 
+model quality. $P(x)$ acts as a normalizing constant to ensure that $P(\theta \mid x)$ 
+is a proper probability that sums to 1. Since it does not depend on $\theta$ is 
+can be dropped which gives us the simplest version of Bayes Theorem.
+
+$$ P(\theta \mid x) \propto L(\theta \mid x) P(\theta) $$
+
+This version is useful for inferring the value of $\theta$ for a given model, 
+since it allows us to use likelihood-ratio criteria while avoid computing the
+(potentially expensive) integral for $P(x)$. 
+
+Once $P(\theta \mid x)$ is computed/estimated we can treat it as any distribution
+and compute any statistic of interest. The catch is that the convolution of 
+$L(\theta \mid x) P(\theta)$ is not easy to compute in all cases, let alone 
+integrate to get $P(x)$. The easiest cases are those where the prior and the likelihood
+are [conjugate](https://en.wikipedia.org/wiki/Conjugate_prior), in which case there
+is a close-form (we can write it down using standard operation) solution. However,
+this set of functions is rather restrictive and more general techniques have been
+developed to deal with any likelihood/prior pair. These techniques are based on 
+Markov Chains and aim to generate a (big) random sample from the posterior distribution
+that can be used to estimate the statistics of interest.
+
+Below we show how Bayesian Inference works for our coin example assuming a 
+[Beta](https://en.wikipedia.org/wiki/Beta_distribution) prior.
+
+```{r bayesian_inference}
+#| code-fold: show
+# discretize space
+
+dtheta <- 0.01
+theta <- seq(0, 1, by = dtheta)
+
+# Define Prior Beta(2, 2)
+prior_counts <- c(Heads = 2, Tails = 2)
+# prior_counts <- c(Heads = 100, Tails = 100)
+prior <- dbeta(theta, prior_counts["Heads"], prior_counts["Tails"])
+
+# apply Bayes
+Likelihood <- Lcoin(theta, coin_run)
+posterior <- Likelihood * prior
+posterior <- posterior / sum(posterior * dtheta)  # normalize by P(x)
+Likelihood <- Likelihood / sum(Likelihood * dtheta)  # for visualization purposes
+
+matplot(theta, cbind(prior, Likelihood, posterior), type = "l", lty = 1, lwd = 2,
+        main = "Bayesian Inference", ylab = "Density", xlab = "θ", 
+        sub = sprintf("Run: %s", paste(ifelse(coin_run > 0, "H", "T"), collapse = "")),
+        frame.plot = FALSE)
+legend("topleft", bty = "n", legend = c("P(θ)", "L(θ|x)", "P(θ|x)"), 
+       lwd = 2, lty = 1, col = 1:3)
+```
+
+Since our prior distribution peaks, albeit smoothly, around 0.5 centered it has
+the effect of attracting the likelihood toward the center thus likelihood and posterior
+are slightly out of phase. If we use as prior counts 1 and 1 then the prior will
+reduce to a uniform distribution and the posterior will overlap with the likelihood.
+
+Since Beta and Binomial are conjugate we can also update the parameters directly.
+The Beta distribution has 2 parameters that can be thought of as counting the number
+of heads and tails. Thus inference reduces to adding the prior counts to the observed counts.
+
+```{r beta_binomial_posterior}
+# Conjugate posterior
+observed_counts <- c(Heads = sum(coin_run), Tails = sum(1-coin_run))
+posterior_counts <- prior_counts + observed_counts
+posterior_beta <- dbeta(theta, posterior_counts["Heads"], posterior_counts["Tails"])
+
+matplot(theta, cbind(prior, Likelihood, posterior_beta), type = "l", lty = 1, lwd = 2, col = c(1, 2, 4),
+        main = "Bayesian Inference with Conjugate Prior", ylab = "Density", xlab = "θ", 
+        sub = sprintf("Run: %s", paste(ifelse(coin_run > 0, "H", "T"), collapse = "")),
+        frame.plot = FALSE)
+prior_string <- do.call(sprintf, c(fmt = "Beta(%d, %d)", as.list(prior_counts)))
+posterior_string <- do.call(sprintf, c(fmt = "Beta(%d+%d, %d+%d)", as.list(rbind(prior_counts, observed_counts))))
+legend("topleft", bty = "n", legend = c(prior_string, "L(θ|x)",  posterior_string), 
+       lwd = 2, lty = 1, col = c(1, 2, 4))
+```
+
+From a modeling perspective, Bayes theorem introduces an interesting extension to
+the description of the probability model. So far $\theta$ have been a fixed vector
+of numbers but in the Bayesian framework this is swapped for a probability 
+distribution that feed into the likelihood $L(x \mid \theta)$ and alters its profile.
+This distribution composition is a very powerful tool that allows us to build complex
+models and by reusing the same distribution as input to multiple likelihood we can
+"entangle" them and thus achieving partial pooling of the data.
+
+A famous example of this is using a Gamma distribution, which generates positive
+numbers, as a prior for a Poisson distribution which generates count data. This
+has the effect of inflating the variance of the Poisson distributions  (added 
+uncertainty about $\lambda$) and thus the whole ensemble acts like a Negative 
+Binomial distribution.
+
+![Bayesian Models](figures/Bayesian_Gamma-Poisson-01.svg)
+
+**Summary**: There are 2 main ways to reverse engineer the parameters of a distribution.
+Both end up giving a distribution of probable values for the parameters. We also
+in the Bayesian case that parameters can themselves be probability distributions
+allowing us to produce more complex models.
+
+## Testing
+
+> That is not only not right; it is not even wrong
+>
+> --- Wolfgang Pauli
+
+Once we have a well defined probability model (for $\theta$) we can use it to 
+assign probability to any event of interest and answer questions. The most common
+question is what is the probability that $\theta$ is equal to a pre-specified 
+"null" value. What the null value is depends on the application but it usually
+is or the whole distribution can be shifted so that it becomes zero.
+
+In the Bayesian case, all the questions can be answered by querying the posterior
+probability. This is done either by using the standard probability distributions
+with the updated parameters or by computing the statistics of interest in the
+sample of the posterior that we have. 
+
+In the frequentist case, we usually do not have access to the sampling distribution
+but an approximation of it that is optimal around its maximum which we assume coincides
+with the mean. Under the asymptotic theory that we sketched above we can construct
+several metrics. The 3 most commonly used are:
+
+1. The score distance: compares the slope of the likelihood at the null value to 
+   0 (at maximum).
+2. The Wald distance: uses the z-score 
+   $\frac{\hat{\theta} - \theta_0}{\sigma_{\theta}}$
+3. The Likelihood Ratio (LR): compares directly $\ell(\hat{\theta}) - \ell(\theta_0)$
+
+All 3 test are generic since they only depend on the log-likelihood function.
+They are equivalent in the limit but for finite samples they differ. In practice,
+LR and Wald test are the most widely used. Wald test allows us to test multiple
+hypothesis using the same model, while the LR is more sensitive but may require
+to fit multiple models to get accurate values for $\ell(\theta)$.
+
+```{r test_statistics}
+#| column: screen-inset-shaded
+#| layout-nrow: 1
+
+mu <- 1.5
+sigma <- 1
+step <- 0.01
+lik <- data.frame(x = mu + seq(-3, 3, by = step) * sigma)
+lik$loglik <- dnorm(lik$x, mu, sigma, log = TRUE)
+lik$dlog <- c(diff(lik$loglik)/step, NA)
+mle <- which.min(abs(lik$x - mu))
+xnull <- which.min(abs(lik$x))
+
+xnull <- c(1, .5, 0)
+xnull <- sapply(xnull, function(x) which.min(abs(lik$x - x)))
+
+# Scores
+with(lik, {
+    lwd <- 2
+    lty <- 1
+    null_colors <- blues9[c(3, 6, 9)]
+    plot(loglik ~ x, type = "l", lwd = 1, ylim = c(-5.5, -.5),
+         main = "Score Distance", xlab = expression(theta), ylab = expression(logL))
+    abline(h = loglik[mle], col = "red2", lwd = lwd, lty = lty)
+    a <- loglik[xnull] - dlog[xnull] * x[xnull]
+    b <- dlog[xnull]
+    for (k in 3:1) abline(a = a[k], b = b[k], lty = lty, lwd = lwd, col = null_colors[k])
+    points(x[c(xnull, mle)], loglik[c(xnull, mle)], pch = 16, col = c(null_colors, "red2"))
+    legend("topright", legend = round(c(dlog[c(mle, xnull)]), 2), title = expression(partialdiff*logL /partialdiff*theta),
+           lty = lty, lwd = lwd, col = c("red2", null_colors))
+})
+# Wald
+with(lik, {
+    lwd <- 2
+    lty <- 1
+    null_colors <- blues9[c(3, 6, 9)]
+    plot(loglik ~ x, type = "l", lwd = 1, ylim = c(-5.5, -.5),
+         main = "Wald Distance", xlab = expression(theta), ylab = expression(logL))
+    segments(x0 = x[mle], y = -6, y1 = loglik[mle], lty =2, lwd = lwd, col = "red2")
+    segments(x0 = x[xnull], x1 = x[mle], y0 = loglik[xnull], lty =lty, lwd = lwd, col = null_colors)
+    points(x[c(xnull, mle)], loglik[c(xnull, mle)], pch = 16, col = c(null_colors, "red2"))
+    legend("topright", legend = round(c(0, mu - x[xnull])/sigma, 2), 
+           title = expression(frac(hat(theta) - theta[0], sigma)), 
+           lty = lty, lwd = lwd, col = c("red2", null_colors))
+})
+# Ratio
+with(lik, {
+    lwd <- 2
+    lty <- 1
+    null_colors <- blues9[c(3, 6, 9)]
+    plot(loglik ~ x, type = "l", lwd = 1, ylim = c(-5.5, -.5),
+         main = "Likelihood Ratio Distance", xlab = expression(theta), ylab = expression(logL))
+    abline(h = loglik[mle], col = "red2", lwd = lwd, lty = 2)
+    segments(x0 = x[xnull], y0 = loglik[xnull], y1 = loglik[mle], lty =lty, lwd = lwd, col = null_colors)
+    points(x[c(xnull, mle)], loglik[c(xnull, mle)], pch = 16, col = c(null_colors, "red2"))
+    legend("topright", legend = round(2*c(0, loglik[mle] - loglik[xnull]), 2), 
+           title = expression(2(log*hat(L) - logL[0])),  
+           lty = lty, lwd = lwd, col = c("red2", null_colors))
+})
+```
+
+
+Under the null hypothesis, the Wald statistic is distributed as a standard normal
+$\mathcal{N}(0, 1)$. The likelihood statistic is distributed as $\chi^2$ which is 
+the square of the standard normal distribution.^[so it should be called $z^2$ if you ask me]
+
+```{r}
+#| code-fold: show
+#| layout-nrow: 1
+#| column: page
+
+N <- 4L  # number of samples
+mu <- 0  # null mean
+sigma <- 1  # standard dev (assumed to be known though it never is)
+
+# Wald
+mle.emp <- replicate(1000L, mean(rnorm(N, mu, sigma)))
+hist((mle.emp - mu) * sqrt(N) / sigma, breaks = "fd", prob = TRUE,
+     main = "Histogram of Wald Statistic",
+     xlab = expression(frac(hat(mu) - mu, sigma[mu])),
+     ylab = "Probability Density")
+curve(dnorm(x), add = TRUE, col = 2L, lwd = 2L)
+legend("right", bty = "n", legend = "Normal(0, 1)", col = 2, lwd = 2)
+
+# LR
+LR <- replicate(1000L, {
+    x <- rnorm(N, mu, sigma)
+    L0    <- sum(dnorm(x,   mu   , sigma, log = TRUE))
+    Lmle  <- sum(dnorm(x, mean(x), sigma, log = TRUE))
+    2*(Lmle - L0)
+})
+hist(LR, breaks = "fd", prob = TRUE,
+     main = "Histogram of Likelihood Ratio",
+     xlab = expression(frac(L[hat(mu)], L[0])),
+     ylab = "Probability Density")
+curve(dchisq(x, 1L),  # 1 because we only fit the mean
+      from = 0.1, to = 8, col = 2L, lwd = 2L, add = TRUE)
+legend("right", bty = "n", legend = expression(chi[1]), col = 2, lwd = 2)
+```
+
+**Summary**: Once we have a distribution over the parameters of the model we can
+start asking questions about probable value.
+
+## Generalized Linear Models
+
+> Give me a lever long enough and a fulcrum on which to place it, and I shall move the world.
+>
+> ---  Archimedes
+
+![GLM](figures/logistic_regression.png)
+
+We saw in the case of Bayesian inference that we can treat model parameters as 
+random variables which had the effect of altering the probability model. Here we
+are going to treat the parameters as functions of other parameters and known 
+(measured) variables in order to impose some structure in our models. 
+
+The canonical example of this application is linear regression (`lm`). In linear
+regression we treat the mean of the Normal distribution ($\mu$) as a linear function 
+of some known variables ($x$).
+
+$$
+\begin{aligned}
+    \mu &= \eta(x) = x\beta\\
+    P(Y = y \mid X=x, \sigma^2) &= \mathcal{N}(\eta(x), \sigma^2) \\
+    y &\sim \mathcal{N}(\eta(x), \sigma^2) \\
+    y &= \eta(x) + \varepsilon, \quad \varepsilon \sim  \mathcal{N}(0, \sigma^2) 
+\end{aligned}
+$$
+
+Quick reminder that if $x$ and $\beta$ are vectors  (so multiple variable-parameter pairs)
+then "linear" means multiply element-wise and add:
+
+$$\mathbf{x' \beta}= x_1 \beta_1 + x_2 \beta_2 + \dots + x_n \beta_n = \sum_i^n x_i \beta_i$$
+
+There are 2 main reasons for adding structure. First, it makes the model more
+versatile to capture complex phenomena, for example, a Normal distribution
+contains information about 2 numbers (the mean and the variance) but a Normal
+distribution with a changing mean can model a dynamic system. Second, it adds
+explanatory value to the model by decomposing the observed variance into a 
+deterministic part captured by the added structure ($\mu = \eta(x\beta)$), which
+presumably we understand, and a random part capture by the probabilistic model 
+($\sigma^2$), which we definitely do not understand.
+
+$$\text{Total Variance} = \text{Explained Variance} + \text{Random Variance} $$
+
+```{r linear_regression_model}
+#| code-fold: show
+
+
+# fast -> slow -> fast: to make it bimodal
+x <- c(seq(0, 1, length.out = 5), 2:8, seq(9, 10, length.out = 5))
+x <- rep(x, 3L)  # triplicates
+N <- length(x)
+b <- 2
+mu <- b*x
+y <- rnorm(N, mean = mu, sd = 1)
+```
+
+
+```{r linear_regression_model_plot}
+DF <- data.frame(x = x,
+                 y = y,
+                 r = 1L)
+DF <- rbind(DF, data.frame(x = x[1:(N/3)], y = rnorm(N/3, mean = mean(mu), sd =1), r = 0L))
+ggplot(DF, aes(x, y, color = r != 0L)) +
+    geom_abline(slope = b, linetype = "dashed", size = 1, color = "darkorange") +
+    geom_point(show.legend = F) +
+    geom_xsidedensity(color = "black", fill = "gray", alpha = .5,
+                      data = DF[DF$r != 0L, ], 
+                      bw = .75, kernel = "epanechnikov") +
+    geom_ysidedensity(aes(x = after_stat(count), fill = r != 0L), alpha = .4, 
+                      show.legend = F, bw = .75, kernel = "epanechnikov") +
+    scale_color_manual(values = 3:2) +
+    scale_fill_manual(values = 3:2) +
+    coord_fixed(.5) +
+    theme_classic()
+```
+
+Inference in the GLM framework is also facilitated via the likelihood function and
+has a Bayesian and a frequentist version. The only difference from inference in
+of a single parameter is that now we have to decompose the likelihood of the mean
+into the "partial" likelihoods of the unknown parameters $\beta$. This is achieved
+by "back-propagating" the likelihood through the link function^[Link functions 
+have to be *smooth* and *invertible*. Some link functions work "better" with some 
+distributions in the sense that they allow for easier (analytical) solutions.] and 
+then to the parameters used to compose the final mean/variance ($\beta$). This 
+is where using linear functions and canonical links pays off in terms of efficiency.
+
+Below we run the inference for the simple linear model to get the mean 
+(`Estimate`) and variance (`Std. Error`) of the $\hat{beta}$ distribution, 
+which for large sample approximates a Normal as we discussed before. 
+
+[In Python the package [statsmodels](https://www.statsmodels.org) is used to fit
+ linear models]{.aside}
+
+```{r inference_lm}
+#| code-fold: show
+
+fit <- lm(y ~ x)
+summary(fit)
+```
+
+```{r}
+yhat <- fitted(fit)
+var(yhat-y)
+var(yhat)/ var(y)
+```
+
+```{r}
+hist(residuals(fit), breaks = "fd")
+```
+
+The intercept (`(Intercept)`) is another parameter corresponding to the point where
+the line cuts the y-axis. It is used to model the "basal level" of y, ie what is the
+value when the all the variables are 0. Since the intercept contributes to all 
+observations equally it can be thought of as the parameter of a variable $x_0=1$. 
+
+The distribution of the parameter of interest is shown below:
+
+```{r}
+#| code-fold: show
+
+beta_hat <- summary(fit)$coefficients[2,]
+names(beta_hat) <- c("mean", "sigma", "t-val", "p-val")
+beta <- b + seq(-.2, .2, length.out = 101)
+
+# dt = Student-t density. Only applies to `lm`
+LikBeta <- dt((beta - beta_hat["mean"])/beta_hat["sigma"], N-2L)
+plot(beta, LikBeta/max(LikBeta), type = 'l')
+points(beta[which.max(LikBeta)], 1, col = "firebrick", pch = 19)
+abline(v = b, col = "darkorange", lty=2L, lwd=2)
+```
+
+As well as the inferred model:
+
+```{r}
+ggplot(DF[DF$r != 0, ], aes(x, y)) +
+    geom_abline(slope = b, linetype = "dashed", color = "darkorange", size = 1) +
+    geom_smooth(method = "lm", formula = y ~ x, color = "firebrick") +
+    geom_point(color = 2L) +
+    coord_fixed(.5) +
+    theme_classic()
+```
+
+As in our coin example, we observe that the peak does not necessarily align with
+the "true" value but it should be close. If we were able to repeat the experiment
+multiple times and each time we recorded the peak position then the distribution
+of these $\hat{\beta}$ should be centered at the real value of `b`, hinting that
+the MLE is an unbiased estimator of the `b`.
+
+```{r}
+#| code-fold: show
+
+x <- c(seq(0, 1, length.out = 5), 2:8, seq(9, 10, length.out = 5))
+x <- rep(x, 3L)  # triplicates
+N <- length(x)
+Nrep <- 1000L
+b <- 2
+mu <- b*x
+
+beta <- replicate(Nrep, {
+    y <- rnorm(N, mean = mu, sd = 1)
+    fit <- lm(y ~ x)  # for real simulation there is a faster way
+    coef(fit)[2]
+})
+
+hist(beta, breaks = "fd", 
+     main = "Sampling Distribution of β",
+     xlab = expression(hat(beta)))
+abline(v = c(b, mean(beta)), col = c("darkorange", "firebrick"), lty=2L, lwd=2)
+legend("topleft", legend = c(expression(beta['*']), expression(E(hat(beta)))), bty = "n",
+       col = c("darkorange", "firebrick"), lty = 2L, lwd = 2)
+```
+
+### Confounding
+
+Not all variables included in a GLM are of scientific interest. In natural sciences,
+we rarely have the chance to study a system in isolation. More often than not, the
+phenomena we are studying are embedded in an environment where many variables,
+that cannot be controlled experimentally, are contributing to the signal we are
+measuring. If we can measure these variables, GLMs offer a framework to account
+for their effect by "explaining them away" during the analysis stage. 
+
+The most common case of screening out nuisance parameters is accounting for the 
+basal level of a signal when it is different than zero, eg human height/temperature. 
+A more interesting example is controlling for known effects. For example, we may
+want to control for smoking habits or UV exposure when measuring mutation rates
+since these are known mutagenic processes and we cannot control people's
+behavior directly. By including these variables we are effectively cleaning up
+our signal. Another interesting case, is when a variable affects both the signal
+and the variables we are measuring. In this case, not including the common cause
+will lead us to infer spurious correlation. Overall, which variables should be
+included to the model is not a trivial issue and the researcher has several degrees
+of freedom.
+
+Below we show a classic example of confounding:
+
+- $x_1$ affects both $x_2$ and $y$
+- $x_2$ does not affect $y$
+
+![Common Cause Scenario](figures/confounding.png)
+
+```{r confounding_setup}
+#| code-fold: show
+
+N <- 20L  # replicates
+x1 <- runif(N)  # random 
+x2 <- x1 + rnorm(N, sd = .2)  # x1 + noise
+y <- 1 + 2*x1 + rnorm(N, sd = .2)  # basal + 2*x1 + noise
+```
+
+If we naively try to predict $y$ from $x_2$ we will recover a strong relationship
+because both of them encode some information about $x_1$.
+
+```{r confounding_no_control}
+#| code-fold: show
+
+lm(y ~ x2) |> summary()
+```
+
+But if we *control for* $x_1$ by adding it to the model then the relationship 
+$x_2 \to y$ disappears.
+
+```{r confounding_control}
+#| code-fold: show
+
+lm(y ~ x1 + x2) |> summary()
+```
+
+
+### Non Linearities
+
+Linearity constraint is not as restrictive as it may seem at first. It constraints 
+the way we combine the parameters ($\beta$) not the measured variables $x$ which
+are effectively unconstrained and can be transformed to have a non-linear
+relationship to the final output. 
+
+For example, we can use "dummy" variables to encode discrete variables like
+group-membership:
+
+```{r dummy_variables}
+#| code-fold: show
+
+x <- factor(rep(LETTERS[1:3], each = 3))
+xdummy <- model.matrix(~x + 0)
+colnames(xdummy) <- levels(x)
+# for pretty printing
+xdummy |> as.data.frame() |> rmarkdown::paged_table()
+
+b <- c(1, 2, 3)
+mu <- xdummy %*% b
+y <- rnorm(length(x), mu, sd = .5)
+plot(x, y)
+points(rep(1:3, each = 3), y, pch = 19, col = 2)
+```
+
+```{r fit_dummy}
+#| code-fold: show
+
+lm(y ~ x + 0) |> summary()
+```
+
+Or we can apply pass them through one or more non-linear (but deterministic) 
+functions before we combine them with $\beta$.^[We have to be careful though that 
+our transformation to not induce strong correlations between the variables because 
+then it would be harder to decompose their relative contributions.]
+
+```{r non_linear_lm}
+#| code-fold: show
+
+# same x as 1st example
+x <- c(seq(0, 1, length.out = 5), 2:8, seq(9, 10, length.out = 5))
+xx <- sin(x/5 * pi)  # non-linear transformation
+b <- 2
+mu <- b * xx
+N <- length(x) * 3L 
+y <- rnorm(N, mean = mu, sd = .5)
+```
+
+```{r non_linear_lm_plot}
+DF <- data.frame(x = rep(x, 3L),
+                 xx = rep(xx, 3L),
+                 mu = mu,
+                 y = y,
+                 r = rep(1:3, length(x)))
+
+DF <- reshape(DF, direction = "long", varying = c("x", "xx"),
+              v.names = "X", times = c("x", "sin(πx/5)"))
+DF$time <- factor(DF$time, c("x", "sin(πx/5)"))
+ggplot(DF, aes(X, y)) +
+    geom_line(aes(y = mu), linetype = "dashed", size = 1) +
+    geom_point(color = 2, show.legend = F) +
+    facet_wrap(~time, nrow = 1L, scales = "free_x") +
+    scale_color_viridis_c(option = "B") +
+    labs(x = "", y = "y", title = "Fitting Known Non-linear Fuctions") +
+    theme_bw()
+```
+
+```{r}
+#| code-fold: show
+
+lm(y ~ rep(x, 3)) |> summary()
+
+lm(y ~ rep(xx, 3)) |> summary()
+```
+
+### Non Gaussian Variance
+
+A GLM swaps the normal distribution for any other distribution from the exponential
+family and thus can model different data like binary events, counts, non-negative
+quantities. Unlike the Normal, these distribution means and/or variance have constraints,
+for example in the Bernoulli distribution (for binary events) the mean has to be
+a probability so it must be in the [0, 1] interval. Since we cannot know a-priori
+the value the variables will assume, these models are equipped with a *link function*
+that maps the real line $(-\infty,\infty)$ to the appropriate segment. The general
+form of a GLM is the following:
+[The use of the exponential family and canonical link functions is restrictive, but
+the prize of this simplicity is speed and a theory that allows us to do inference.
+In science we like simple, linear effects]{.aside}
+
+$$
+\begin{aligned}
+    E(y) &=  g^{-1}(x \beta) = \mu \\ 
+    V(y) &= \phi V(\mu) = \sigma^2\\
+    y &\sim \mathcal{D}(\mu, \sigma^2) 
+\end{aligned}
+$$
+
+The standard example is logistic regression were we model the probability of a
+binary event (like our coin toss) as a function of another variable. To achieve
+that we need:
+
+- a sigmoid link function that maps the $s:\mathbb{R} \to [0, 1]$. The canonical
+  function for this is the logistic: $(1 + e^{-x})^{-1}$
+- a distribution that produces binary events. The canonical distribution for this
+  is the Bernoulli $\text{Bern}(p)$
+
+So we have:
+
+$$
+\begin{aligned}
+    p &=  (1 + e^{-x \beta})^{-1} \\ 
+    y &\sim \text{Bern}(p) 
+\end{aligned}
+$$
+
+```{r logistic_regression}
+#| code-fold: show
+
+# link and distribution
+logistic <- function(x) (1 + exp(-x))^(-1)
+rbern <- function(n, prob) rbinom(n, prob = prob, size = 1L)
+
+# model mean
+b <- 2
+x <- seq(-2, 2, length.out = 11)
+mu <- b * x
+p <- logistic(mu)
+
+# generate data
+N <- length(x) * 3L 
+y <- matrix(rbern(N, p), ncol = 3L)
+
+# plot
+matplot(x, y + c(-1, 0, 1)*.05, pch = 16L, col = 2L, frame.plot = FALSE,
+        main = "Logistic Regresion", xlab = "x", ylab = "y")
+lines(x, p, col = 1L, lty = 2L, lwd = 2)
+legend("right", bty = "n", legend = expression(eta(x*beta)), col = 1, lty = 2L, lwd = 2)
+```
+
+```{r inference_glm}
+#| code-fold: show
+
+y <- as.vector(y)
+x <- rep(x, 3L)
+fit <- glm(y ~ x, family = binomial(link = "logit"))
+summary(fit)
+```
+
+```{r}
+#| code-fold: show
+beta_hat <- summary(fit)$coefficients[2,]
+names(beta_hat) <- c("mean", "sigma", "t-val", "p-val")
+beta <- b + seq(-5, 5, length.out = 101)
+LikBeta <- dnorm(beta, beta_hat["mean"], beta_hat["sigma"])  # dnorm instead of dt
+
+plot(beta, LikBeta, type = 'l', frame.plot = FALSE,
+     main = "Sampling Distribution", xlab = expression(beta), ylab = "Density")
+points(beta[which.max(LikBeta)], max(LikBeta), col = "firebrick", pch = 19)
+abline(v = b, col = "darkorange", lty=2L, lwd=2)
+legend("topright", bty = "n", legend = c("MLE", "β*"), 
+       pch = c(19, NA), lty = c(NA, lty = 2),
+       lwd = 2, col = c("firebrick", "darkorange"))
+```
+
+You may notice that the distribution of $\beta$ is wider in this case compared
+to the simple linear model. That is because of each data point carries "less information"
+as it can only take 2 values.^[If however our goal was to predict future values
+of $y$ we could turn this discreteness to our advantage]
+
+### Choosing GLM
+
+The choice of GLM depends on the type and amount of data we have. There is a trade-off
+between complexity and accuracy. More complex GLMs use more parameters and can thus
+model a wider range of distributions (over-dispersion) but at the cost of less data,
+and thus more uncertainty, per parameter.
+
+Below is a table of common [GLMs from Wikipedia](https://en.wikipedia.org/wiki/Generalized_linear_model#Link_function)
+
+![table of GLMs](figures/common_glms.png)
+
+And a decision tree to guide the choice:
+
+![GLM Decision Tree](https://schmettow.github.io/New_Stats/Illustrations/GLM_decision_chart.png)
+
+### Statistical Test as GLMs
+
+For better or worse (definitely worse see 
+[here](https://www.nature.com/articles/506150a), 
+[here](https://doi.org/10.1080/00031305.2016.1154108), and 
+[here](https://www.tandfonline.com/toc/utas20/73/sup1)), 
+some people want to know what's the *p-value* of a coefficient (or sometimes they 
+just want to know if it is below a threshold which can be a [good thing](https://doi.org/10.1016/j.cels.2019.03.001)) 
+and sometimes they even want the p-value of a particular test. These concept are
+clouded in mystery and people much more knowledgeable than me have failed to
+articulate them or convince people how to use them, so I am not going to try in
+writing. Below is a visual representation of what a p-value for $\hat{\beta}$
+is, it's the probability mass represented by the shaded area.
+
+```{r}
+b <- 1 # lower
+x <- seq(-2, 2, length.out = 11)
+mu <- b * x
+p <- logistic(mu)
+N <- length(x)  # less data
+Nrep <- 2L
+y <- matrix(rbern(N*Nrep, p), ncol = 2L)
+matplot(x, y + seq(-1, 1, length.out=Nrep)*.05, 
+        pch = 16L, col = 2L, frame.plot = FALSE,
+        main = "Logistic Regresion", xlab = "x", ylab = "y")
+lines(x, p, col = 1L, lty = 2L, lwd = 2)
+legend("right", bty = "n", legend = expression(eta(x*beta)), 
+       col = 1, lty = 2L, lwd = 2)
+
+x <- rep(x, Nrep)
+y <- as.vector(y)
+```
+
+```{r pvalue_code}
+#| code-fold: show
+
+fit <- glm(y ~ x, family = binomial(link = "logit"))
+summary(fit)
+
+beta_hat <- summary(fit)$coefficients[2L, ]
+pval <- function(beta) {
+    x <- abs(beta["Estimate"])
+    std <- beta["Std. Error"]
+    pnorm( x, 0, std, lower.tail = FALSE) + 
+    pnorm(-x, 0, std, lower.tail = TRUE)
+}
+all.equal(pval(beta_hat), beta_hat["Pr(>|z|)"], 
+          check.attributes = FALSE)
+```
+
+And visually:
+
+```{r pvalue_visual}
+#| column: body-outset
+
+names(beta_hat) <- c("mean", "sigma", "t-val", "p-val")
+mle <- beta_hat["mean"]
+dnull <- function(x) dnorm(x, mean = 0, beta_hat["sigma"])  # null distribution
+
+beta <- seq(-5, 5, length.out = 101)
+plot(beta, dnull(beta), type = 'l', frame.plot = FALSE, lwd=2,
+     main = "Null Distribution", xlab = "β", ylab = "P(β | x, y)")
+lines(beta, dnorm(beta, mle, beta_hat["sigma"]), 
+      lty = 2, col = "firebrick")
+dhat <- dnull(mle)  # peak
+segments(mle, 0, mle, dnull(0), col="firebrick", lty=2)
+points(c(1, -1) * mle, c(dhat, dhat),
+       col = "firebrick", pch = c(19, 1))
+
+xx <- seq(-5, -abs(mle), length.out = 30)
+polygon(x = c(xx[1], xx, xx[30]) , y = c(0, dnull(xx), 0),
+        border = NA, col = "#00000033")
+
+xx <- seq(abs(beta_hat["mean"]), 5, length.out = 30)
+polygon(x = c(xx[1], xx, xx[30]) , y = c(0, dnull(xx), 0), 
+        border = NA, col = "#00000033")
+
+arrows(mle, dnull(0)/2, 0, dnull(0)/2,
+       length = .1, col = "firebrick")
+
+legend("left", bty = "n", 
+       legend = c("Sampling Distribution",
+                  expression(hat(beta)), 
+                  expression(-hat(beta)),
+                  expression(P(beta > abs(hat(beta))))), 
+       pch = c(NA, 19, 1, 15), lty = c(2, NA, NA, NA), 
+       col = c("firebrick", "firebrick", "firebrick", "#00000033"))
+```
+
+The *statistical test* is usually even more mysterious than the *p-value*, but 
+thankfully for us they are equivalent to generative models. The main difference 
+from standard models is that they describe specific scenarios and are thus more
+fine-tuned to them while GLMs aim to be more generally applicable. For large
+samples the 2 usually agree though. See [here](https://lindeloev.github.io/tests-as-linear/) 
+for some examples:
+
+![stat tests are linear models](https://lindeloev.github.io/tests-as-linear/linear_tests_cheat_sheet.png)
+
+This equivalence is only asymptotic but it allows us to generalize these tests
+and control for nuisance parameters.
+
+## References/Resources
+
+Probability theory with emphasis on programming implementation:
+
+- [Statistics for Biologists](https://www.nature.com/collections/qghhqm/): Nature
+  collection of articles explaining statistics for biologists.
+- [Seeing Theory](https://seeing-theory.brown.edu/): visual introduction to 
+  probability and statistics
+- [Statistical Rethinking](https://xcelab.net/rm/statistical-rethinking/): it is
+  a modern classic for Bayesian analysis. Both R and Python implementations
+- [Learning statistics with R](https://bookdown.org/ekothe/navarro26/): introduction
+  to applied statistics.
+- [Think Stats](https://greenteapress.com/wp/think-stats-2e/): Statistics with Python code.
+- [Inferential Thinking](https://inferentialthinking.com/): 
+  textbooks of UC Berkeley's course "Data 8: Foundations of Data Science"
+- [PyMC resources](https://www.pymc.io/projects/docs/en/stable/learn.html): 
+  emphasis on Bayesian approach
+- [Probability Theory](https://betanalpha.github.io/assets/case_studies/probability_theory.html):
+  based on measure theory and
+  [Modeling and Inference](https://betanalpha.github.io/assets/case_studies/modeling_and_inference.html)
+  both include code
+
+## Appendix
+
+### Density vs Cumulative Distribution
+
+```{r}
+mu <- 10
+dx <- 1 
+x <- seq(0, 20, by = dx)
+CDF <- ppois(x, mu)  
+
+plot(x, CDF, type = "b",
+     frame.plot = FALSE, 
+     main = "Poisson Cumulative Distribution Function",
+     sub = sprintf("Red Length: %.2f", CDF[x == 10]),
+     xlab = "x", ylab = expression(P (X <= x ~ "|" ~ lambda == 10)))
+
+# P(x <= 10)
+segments(10, 0, 10, CDF[x == 10], lty = 1, lwd = 2, col = 2)
+text(x = 10.5, y = (CDF[x == 10])*.5, labels = expression(P(X <= 10)), adj=0, col=2)
+```
+
+```{r}
+plot(x, CDF, type = "b",
+     frame.plot = FALSE, 
+     main = "Poisson Cumulative Distribution Function",
+     sub = sprintf("Green Length = %.3f", CDF[x == 10] - CDF[x == 9]),
+     xlab = "x", ylab = expression(P (X <= x ~ "|" ~ lambda == 10)))
+
+# P(x <= 9)
+segments( 9, CDF[x == 9], 10, CDF[x == 9], lty = 2)
+segments(10, CDF[x == 0], 10, CDF[x == 9], lty = 1, lwd = 2, col = 2)
+text(x = 10.5, y = CDF[x == 9]*.5, 
+     labels = expression(P(X <= 9)), 
+     adj=0, col=2)
+
+# P(x == 10)
+segments(10, CDF[x == 9], 10, CDF[x == 10], lty = 1, lwd = 2, col = 3)
+text(x = 10.5, y = (CDF[x == 10] + CDF[x == 9])*.5, 
+     labels = expression(P(X == 10) == P(x <= 10) - P(x<=9)), 
+     adj=0, col=3)
+```
+
+```{r}
+plot(x, CDF, type = "b",
+     frame.plot = FALSE, 
+     main = "Poisson Cumulative Distribution Function",
+     xlab = "x", ylab = expression(P (X <= x ~ "|" ~ lambda == 10)))
+segments(x0 = x[-1], y0 = CDF[-20], y1 = CDF[-1], lwd = 3, col = 3)
+segments(x0 = x[-20], y0 = CDF[-20], x1 = x[-1], lty = 2)
+text(x = 7:13 +.1, y = c(CDF[8:14] + CDF[7:13]) *.5, 
+     labels = sprintf("P(%d)", 7:13), col = 3, adj = 0)
+```
+
+```{r}
+add_rect <- function(x, y, w = 1, ...) 
+    rect(x - w/2, 0, x + w/2, y, ...)
+
+# PMF[i] = (CDF[i] - CDF[i-1])/(x[i] - x[i-1])
+PMF <- diff(CDF)/diff(x)  # Probability Mass Function
+PMF <- c(NA, PMF)  
+
+plot(x, PMF, type = "n", frame.plot = FALSE, 
+     main = "Poisson Probability Mass Function",
+     sub = sprintf("Green Area = %.3f", PMF[x == 10] * dx),
+     xlab = "x", ylab = "f(x)")
+# cheating a little by plotting central diffs
+add_rect(x, PMF, col = c(rep(2, 10), 3, rep('white', 10)))
+lines(x, PMF, type = "b", lwd = 2)
+legend("topright", bty = "n",
+       legend = c("P(X < 10)", "P(X = 10)"),
+       pch = 15, col = 2:3, cex=1.25)
+```
+
+```{r}
+mu <- 10
+sigma <- sqrt(mu)
+dx <- 0.5  # precision
+x <- seq(0, 20, by = dx)  # pick a step that hits the "nice" points
+CDF <- pnorm(x, mu, sigma)
+
+plot(x, CDF, type = "l",
+     frame.plot = FALSE,
+     main = "Gaussian Cumulative Distribution Function",
+     sub = sprintf("Green Length = %.3f", CDF[x == 10] - CDF[x == 9]),
+     xlab = "x", ylab = expression(P (X <= x ~ "|" ~ mu == 10)))
+
+# P(x <= 9)
+segments( 9, CDF[x == 9], 10, CDF[x == 9], lty = 2)
+segments(10, CDF[x == 0], 10, CDF[x == 9], lty = 1, lwd = 2, col = 2)
+text(x = 10.5, y = CDF[x == 9] * 0.5, 
+     labels = expression(P(X <= 9)), 
+     adj=0, col=2)
+
+# P(x == 10)
+segments(10, CDF[x == 9], 10, CDF[x == 10], lty = 1, lwd = 2, col = 3)
+text(x = 10.5, y = CDF[x == 9.5],
+     labels = expression(P(paste(9 < x) <= 10)),
+     adj=0, col=3)
+```
+
+```{r}
+# PDF[i] = (CDF[i] - CDF[i-1])/(x[i] - x[i-1])
+PDF <- diff(CDF)/diff(x)
+PDF <- c(NA, PDF)  
+plot(x, PDF, type = "n", frame.plot = FALSE, 
+     main = "Gaussian Probability Density Function",
+     sub = sprintf("Green Area = %.3f", PDF[x == 10] * dx),
+     xlab = "x", ylab = "f(x)")
+add_rect(x, PDF, dx, col = ifelse(x < 10, 2, ifelse(x > 10, "white", 3)))
+lines(x, PDF, type = "l", lwd = 2)
+legend("topright", bty = "n",
+       legend = c(expression(P(X < 10 - dx)), expression(P(abs(X - 10) <= dx))),
+       pch = 15, col = 2:3, cex=1.25)
+```
+
+```{r}
+dx <- 0.05  # precision
+x <- seq(0, 1, by = dx)  # pick a step that hits the "nice" points
+CDF <- pbeta(x, 2, 2)
+
+plot(x, CDF, type = "l",
+     frame.plot = FALSE,
+     main = "Beta(2,2) Cumulative Distribution Function",
+     sub = sprintf("Green Length = %.3f", CDF[x == .5] - CDF[x == .4]),
+     xlab = "x", ylab = expression(P (X <= x ~ "|" ~ mu == .5)))
+
+# P(x <= 9)
+segments( .4, CDF[x == .4], .5, CDF[x == .4], lty = 2)
+segments(.5, CDF[x == 0], .5, CDF[x == .4], lty = 1, lwd = 2, col = 2)
+text(x = .51, y = CDF[x == .4] * 0.5, 
+     labels = expression(P(X <= .4)), 
+     adj=0, col=2)
+
+# P(x == .5)
+segments(.5, CDF[x == .4], .5, CDF[x == .5], lty = 1, lwd = 2, col = 3)
+text(x = .51, y = CDF[x == .45],
+     labels = expression(P(paste(.4 < x) <= .5)),
+     adj=0, col=3)
+```
+
+```{r}
+# PDF[i] = (CDF[i] - CDF[i-1])/(x[i] - x[i-1])
+PDF <- diff(CDF)/diff(x)
+PDF <- c(NA, PDF)  
+plot(x, PDF, type = "n", frame.plot = FALSE, 
+     main = "Beta(2,2) Probability Density Function",
+     sub = sprintf("Green Area = %.3f", PDF[x == .5] * dx),
+     xlab = "x", ylab = "f(x)")
+add_rect(x, PDF, dx, col = ifelse(x == .5, 3, ifelse(x < .5, 2, "white")))
+lines(x, PDF, type = "l", lwd = 2)
+legend("topright", bty = "n",
+       legend = c(expression(P(X < .5 - dx)), expression(P(abs(X - .5) <= dx))),
+       pch = 15, col = 2:3, cex=1.25)
+```
