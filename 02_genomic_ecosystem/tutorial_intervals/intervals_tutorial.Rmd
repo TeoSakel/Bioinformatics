@@ -178,7 +178,7 @@ reads10
 ```{r}
 reads10 <- resize(reads10, 150, fix = "start")
 bw10 <- coverage(reads10)
-export(bw10, sprintf("%s_chr10.bw", file_meta$sample_id[1]), "BigWig")
+export(bw10, sprintf("%s_chr10.bw", meta$sample_id[1]), "BigWig")
 ```
 
 so far what we have done is equivalent to:
