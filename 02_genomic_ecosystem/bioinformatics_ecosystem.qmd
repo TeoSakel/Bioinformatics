@@ -546,7 +546,7 @@ defined ones. The 11 mandatory fields are:
 Though not mandatory, 3 extra columns are commonly defined:
 
 - `AS:i`: the alignment score, quantifies the similarity between read and reference
-- `MD:Z`: auxiliary string to `CIGAR` encoding insertions and deletions (indels)
+- `MD:Z`: auxiliary string to `CIGAR` encoding deletions and substitutions
 
 An example is shown below:
 
